@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 // API RESPONSE STRUCTS (Moved from src/api.rs)
 // ===============================================
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct TandCResponse {
     pub version: String,
     pub content: String,
@@ -139,6 +139,37 @@ pub struct MiningContext<'a> {
     pub threads: u32,
     pub cli_challenge: Option<&'a String>,
     pub data_dir: Option<&'a str>,
+}
+
+// Owned version of MiningContext for thread safety (no lifetimes)
+#[derive(Debug, Clone)]
+pub struct OwnedMiningContext {
+    pub client: blocking::Client,
+    pub api_url: String,
+    pub tc_response: TandCResponse,
+    pub donate_to_option: Option<String>,
+    pub threads: u32,
+    pub cli_challenge: Option<String>,
+    pub data_dir: Option<String>,
+}
+
+impl<'a> MiningContext<'a> {
+    /// Convert to an owned version that can be sent across threads
+    pub fn to_owned(&self) -> OwnedMiningContext {
+        OwnedMiningContext {
+            client: self.client.clone(),
+            api_url: self.api_url.clone(),
+            tc_response: TandCResponse {
+                version: self.tc_response.version.clone(),
+                content: self.tc_response.content.clone(),
+                message: self.tc_response.message.clone(),
+            },
+            donate_to_option: self.donate_to_option.map(|s| s.clone()),
+            threads: self.threads,
+            cli_challenge: self.cli_challenge.map(|s| s.clone()),
+            data_dir: self.data_dir.map(|s| s.to_string()),
+        }
+    }
 }
 
 

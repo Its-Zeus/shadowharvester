@@ -1,7 +1,7 @@
 // src/mining.rs
 
 use crate::api;
-use crate::data_types::{DataDir, DataDirMnemonic, MiningContext, MiningResult, ChallengeData, PendingSolution, FILE_NAME_FOUND_SOLUTION, is_solution_pending_in_queue, FILE_NAME_RECEIPT, WalletConfig};
+use crate::data_types::{DataDir, DataDirMnemonic, MiningContext, OwnedMiningContext, MiningResult, ChallengeData, PendingSolution, FILE_NAME_FOUND_SOLUTION, is_solution_pending_in_queue, FILE_NAME_RECEIPT, WalletConfig};
 use crate::cli::Cli;
 use crate::cardano;
 use crate::utils::{self, next_wallet_deriv_index_for_challenge, print_mining_setup, print_statistics, receipt_exists_for_index, run_single_mining_cycle};
@@ -469,20 +469,7 @@ pub fn run_wallet_pool_mining(context: MiningContext, wallets_file: &str, concur
             };
 
             if let Some(wallet) = wallet_opt {
-                let context_clone = MiningContext {
-                    client: context.client.clone(),
-                    api_url: context.api_url.clone(),
-                    tc_response: crate::data_types::TandCResponse {
-                        version: context.tc_response.version.clone(),
-                        content: context.tc_response.content.clone(),
-                        message: context.tc_response.message.clone(),
-                    },
-                    donate_to_option: context.donate_to_option,
-                    threads: context.threads,
-                    cli_challenge: context.cli_challenge,
-                    data_dir: context.data_dir,
-                };
-
+                let context_clone = context.to_owned();
                 let challenge_params_clone = challenge_params.clone();
                 let reg_message_clone = reg_message.clone();
                 let completion_tx_clone = completion_tx.clone();
@@ -517,20 +504,7 @@ pub fn run_wallet_pool_mining(context: MiningContext, wallets_file: &str, concur
             };
 
             if let Some(wallet) = next_wallet {
-                let context_clone = MiningContext {
-                    client: context.client.clone(),
-                    api_url: context.api_url.clone(),
-                    tc_response: crate::data_types::TandCResponse {
-                        version: context.tc_response.version.clone(),
-                        content: context.tc_response.content.clone(),
-                        message: context.tc_response.message.clone(),
-                    },
-                    donate_to_option: context.donate_to_option,
-                    threads: context.threads,
-                    cli_challenge: context.cli_challenge,
-                    data_dir: context.data_dir,
-                };
-
+                let context_clone = context.to_owned();
                 let challenge_params_clone = challenge_params.clone();
                 let reg_message_clone = reg_message.clone();
 
@@ -565,7 +539,7 @@ pub fn run_wallet_pool_mining(context: MiningContext, wallets_file: &str, concur
 /// Helper function to mine with a single wallet
 fn mine_single_wallet(
     wallet: WalletConfig,
-    context: MiningContext,
+    context: OwnedMiningContext,
     challenge_params: ChallengeData,
     reg_message: String,
 ) {
@@ -589,14 +563,14 @@ fn mine_single_wallet(
     let data_dir = DataDir::Mnemonic(wallet_config);
 
     // Check for unsubmitted solutions from previous run
-    if let Some(base_dir) = context.data_dir {
+    if let Some(ref base_dir) = context.data_dir {
         if let Err(e) = check_for_unsubmitted_solutions(base_dir, &challenge_params.challenge_id, &mining_address, &data_dir) {
             eprintln!("  ⚠️ Error checking for unsubmitted solutions: {}", e);
         }
     }
 
     // Check if wallet already has receipt for this challenge
-    if let Some(base_dir) = context.data_dir {
+    if let Some(ref base_dir) = context.data_dir {
         if let Ok(true) = is_solution_pending_in_queue(base_dir, &mining_address, &challenge_params.challenge_id) {
             println!("  ℹ️ Wallet {} already has pending solution. Skipping.", wallet.name);
             return;
@@ -635,7 +609,7 @@ fn mine_single_wallet(
     }
 
     // Save challenge
-    if let Some(base_dir) = context.data_dir {
+    if let Some(ref base_dir) = context.data_dir {
         if let Err(e) = data_dir.save_challenge(base_dir, &challenge_params) {
             eprintln!("  ⚠️ Failed to save challenge: {}", e);
         }
@@ -647,9 +621,9 @@ fn mine_single_wallet(
     let (result, total_hashes, elapsed_secs) = run_single_mining_cycle(
         mining_address.clone(),
         context.threads,
-        context.donate_to_option,
+        context.donate_to_option.as_ref(),
         &challenge_params,
-        context.data_dir,
+        context.data_dir.as_deref(),
     );
 
     match result {
