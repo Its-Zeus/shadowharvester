@@ -5,7 +5,105 @@ use crate::data_types::{DataDir, DataDirMnemonic, MiningContext, OwnedMiningCont
 use crate::cli::Cli;
 use crate::cardano;
 use crate::utils::{self, next_wallet_deriv_index_for_challenge, print_mining_setup, print_statistics, receipt_exists_for_index, run_single_mining_cycle};
-use std::{fs, path::PathBuf, sync::{Arc, Mutex}, thread}; // Added fs, path::PathBuf, sync, thread
+use std::{fs, path::PathBuf, sync::{Arc, Mutex, atomic::{AtomicBool, AtomicUsize, Ordering}}, thread, time::{Duration, Instant}}; // Added fs, path::PathBuf, sync, thread
+
+// Live statistics tracking
+#[derive(Debug, Clone, PartialEq)]
+enum WalletStatus {
+    Waiting,
+    Mining,
+    Solved,
+    Failed,
+    Skipped,
+}
+
+#[derive(Debug, Clone)]
+struct LiveStats {
+    total_wallets: usize,
+    solved: usize,
+    failed: usize,
+    skipped: usize,
+    currently_mining: Vec<String>,
+    challenge_id: String,
+    challenge_deadline: String,
+    start_time: Instant,
+}
+
+impl LiveStats {
+    fn display(&self) {
+        // Clear screen and move to top
+        print!("\x1B[2J\x1B[H");
+
+        let elapsed = self.start_time.elapsed().as_secs();
+        let completed = self.solved + self.failed + self.skipped;
+        let remaining = self.total_wallets - completed;
+        let avg_time = if completed > 0 { elapsed / completed as u64 } else { 0 };
+        let est_remaining_mins = if avg_time > 0 && remaining > 0 { (remaining as u64 * avg_time) / 60 } else { 0 };
+
+        println!("╔══════════════════════════════════════════════════════════╗");
+        println!("║       🚀 Shadow Harvester - Live Mining Dashboard       ║");
+        println!("╠══════════════════════════════════════════════════════════╣");
+        println!("║                                                          ║");
+        println!("║  📋 Challenge: {:<44}║", self.challenge_id.chars().take(44).collect::<String>());
+        println!("║  ⏰ Deadline:  {:<44}║", self.challenge_deadline.chars().take(44).collect::<String>());
+        println!("║                                                          ║");
+        println!("╠══════════════════════════════════════════════════════════╣");
+        println!("║  📊 PROGRESS                                             ║");
+        println!("╠══════════════════════════════════════════════════════════╣");
+        println!("║                                                          ║");
+        println!("║  Total Wallets:      {:<35} ║", self.total_wallets);
+        println!("║  ✅ Solved:          {:<35} ║", self.solved);
+        println!("║  ✓  Skipped:         {:<35} ║", self.skipped);
+        println!("║  ✗  Failed:          {:<35} ║", self.failed);
+        println!("║  ⏳ Remaining:       {:<35} ║", remaining);
+        println!("║                                                          ║");
+        println!("╠══════════════════════════════════════════════════════════╣");
+        println!("║  ⏱️  TIMING                                               ║");
+        println!("╠══════════════════════════════════════════════════════════╣");
+        println!("║                                                          ║");
+        println!("║  Elapsed:            {}m {}s{:<27}║", elapsed / 60, elapsed % 60, "");
+        println!("║  Avg per wallet:     {}s{:<31}║", avg_time, "");
+        println!("║  Est. remaining:     {}m{:<31}║", est_remaining_mins, "");
+        println!("║                                                          ║");
+        println!("╠══════════════════════════════════════════════════════════╣");
+        println!("║  ⛏️  CURRENTLY MINING                                     ║");
+        println!("╠══════════════════════════════════════════════════════════╣");
+        println!("║                                                          ║");
+
+        for (i, wallet_name) in self.currently_mining.iter().enumerate().take(5) {
+            println!("║  {}. {:<52}║", i + 1, wallet_name.chars().take(52).collect::<String>());
+        }
+
+        // Fill empty slots
+        for i in self.currently_mining.len()..5 {
+            println!("║  {}. {:<52}║", i + 1, "-");
+        }
+
+        println!("║                                                          ║");
+        println!("╚══════════════════════════════════════════════════════════╝");
+        println!();
+
+        // Progress bar
+        let progress_pct = if self.total_wallets > 0 {
+            (completed as f64 / self.total_wallets as f64 * 100.0) as usize
+        } else {
+            0
+        };
+        let bar_width = 50;
+        let filled = (progress_pct * bar_width / 100).min(bar_width);
+        let empty = bar_width - filled;
+
+        print!("  [");
+        for _ in 0..filled {
+            print!("█");
+        }
+        for _ in 0..empty {
+            print!("░");
+        }
+        println!("] {}%", progress_pct);
+        println!();
+    }
+}
 
 // ===============================================
 // SOLUTION RECOVERY FUNCTION
@@ -440,10 +538,6 @@ pub fn run_wallet_pool_mining(context: MiningContext, wallets_file: &str, concur
     let total_wallets = wallets.len();
     let reg_message = context.tc_response.message.clone();
 
-    // Statistics counters
-    let solved_count = Arc::new(AtomicUsize::new(0));
-    let failed_count = Arc::new(AtomicUsize::new(0));
-
     println!("\n✅ Loaded {} wallets\n", total_wallets);
 
     loop {
@@ -462,14 +556,35 @@ pub fn run_wallet_pool_mining(context: MiningContext, wallets_file: &str, concur
             }
         };
 
-        println!("╔════════════════════════════════════════════╗");
-        println!("║ Challenge: {} (Day {})", &challenge_params.challenge_id[..challenge_params.challenge_id.len().min(20)], challenge_params.day);
-        println!("║ Deadline: {}", challenge_params.latest_submission);
-        println!("╚════════════════════════════════════════════╝");
+        // Initialize live stats
+        let live_stats = Arc::new(Mutex::new(LiveStats {
+            total_wallets,
+            solved: 0,
+            failed: 0,
+            skipped: 0,
+            currently_mining: Vec::new(),
+            challenge_id: challenge_params.challenge_id.clone(),
+            challenge_deadline: challenge_params.latest_submission.clone(),
+            start_time: Instant::now(),
+        }));
+
+        // Start display update thread
+        let stats_clone = Arc::clone(&live_stats);
+        let display_running = Arc::new(AtomicBool::new(true));
+        let display_running_clone = Arc::clone(&display_running);
+
+        let display_handle = thread::spawn(move || {
+            while display_running_clone.load(Ordering::SeqCst) {
+                if let Ok(stats) = stats_clone.lock() {
+                    stats.display();
+                }
+                thread::sleep(Duration::from_secs(2));
+            }
+        });
 
         // Shared wallet queue
         let wallet_queue = Arc::new(Mutex::new(wallets.clone().into_iter().collect::<Vec<_>>()));
-        let (completion_tx, completion_rx) = mpsc::channel::<(String, u32)>();
+        let (completion_tx, completion_rx) = mpsc::channel::<(String, u32, MiningResult)>();
 
         // Launch initial batch of mining threads
         let mut active_count = 0;
@@ -484,17 +599,19 @@ pub fn run_wallet_pool_mining(context: MiningContext, wallets_file: &str, concur
                 let challenge_params_clone = challenge_params.clone();
                 let reg_message_clone = reg_message.clone();
                 let completion_tx_clone = completion_tx.clone();
+                let stats_clone = Arc::clone(&live_stats);
 
                 active_count += 1;
 
                 thread::spawn(move || {
-                    mine_single_wallet(
+                    let result = mine_single_wallet_quiet(
                         wallet.clone(),
                         context_clone,
                         challenge_params_clone,
                         reg_message_clone,
+                        stats_clone,
                     );
-                    let _ = completion_tx_clone.send((wallet.name.clone(), wallet.id));
+                    let _ = completion_tx_clone.send((wallet.name.clone(), wallet.id, result));
                 });
             }
         }
@@ -503,18 +620,18 @@ pub fn run_wallet_pool_mining(context: MiningContext, wallets_file: &str, concur
         drop(completion_tx);
 
         // Monitor completions and launch new wallets as they finish
-        let mut completed_count = 0;
-        let start_time = std::time::Instant::now();
+        for (wallet_name, wallet_id, result) in completion_rx {
+            // Update stats based on result
+            {
+                let mut stats = live_stats.lock().unwrap();
+                stats.currently_mining.retain(|w| w != &wallet_name);
 
-        for (wallet_name, wallet_id) in completion_rx {
-            completed_count += 1;
-            let remaining = total_wallets - completed_count;
-            let elapsed = start_time.elapsed().as_secs();
-            let avg_time = if completed_count > 0 { elapsed / completed_count as u64 } else { 0 };
-            let est_remaining = if avg_time > 0 { remaining * avg_time as usize } else { 0 };
-
-            println!("📊 Progress: {}/{} | ⏱️ Avg: {}s | Est. remaining: {}m",
-                completed_count, total_wallets, avg_time, est_remaining / 60);
+                match result {
+                    MiningResult::FoundAndQueued => stats.solved += 1,
+                    MiningResult::AlreadySolved => stats.skipped += 1,
+                    MiningResult::MiningFailed => stats.failed += 1,
+                }
+            }
 
             // Try to launch next wallet from queue
             let next_wallet = {
@@ -526,25 +643,40 @@ pub fn run_wallet_pool_mining(context: MiningContext, wallets_file: &str, concur
                 let context_clone = context.to_owned();
                 let challenge_params_clone = challenge_params.clone();
                 let reg_message_clone = reg_message.clone();
+                let stats_clone = Arc::clone(&live_stats);
 
                 // Note: We can't use completion_tx here since it's dropped
                 // This is OK - the rotation happens only in the initial batch
                 thread::spawn(move || {
-                    mine_single_wallet(
+                    let _result = mine_single_wallet_quiet(
                         wallet,
                         context_clone,
                         challenge_params_clone,
                         reg_message_clone,
+                        stats_clone,
                     );
                 });
             }
         }
 
-        let total_time = start_time.elapsed().as_secs();
-        println!("\n╔════════════════════════════════════════════╗");
-        println!("║ ✅ Challenge Complete!                     ║");
-        println!("║ Wallets: {}/{} | Time: {}m {}s", total_wallets, total_wallets, total_time / 60, total_time % 60);
-        println!("╚════════════════════════════════════════════╝");
+        // Stop display thread
+        display_running.store(false, Ordering::SeqCst);
+        let _ = display_handle.join();
+
+        // Final display
+        {
+            let stats = live_stats.lock().unwrap();
+            stats.display();
+
+            let total_time = stats.start_time.elapsed().as_secs();
+            println!();
+            println!("╔══════════════════════════════════════════════════════════╗");
+            println!("║              ✅ Challenge Complete!                      ║");
+            println!("╠══════════════════════════════════════════════════════════╣");
+            println!("║  Solved:   {}  |  Skipped: {}  |  Failed: {}              ║", stats.solved, stats.skipped, stats.failed);
+            println!("║  Total Time: {}m {}s                                      ║", total_time / 60, total_time % 60);
+            println!("╚══════════════════════════════════════════════════════════╝");
+        }
 
         // Wait for new challenge or exit based on mode
         if context.cli_challenge.is_some() {
@@ -559,7 +691,93 @@ pub fn run_wallet_pool_mining(context: MiningContext, wallets_file: &str, concur
     Ok(())
 }
 
-/// Helper function to mine with a single wallet
+/// Helper function to mine with a single wallet (quiet version for live stats)
+fn mine_single_wallet_quiet(
+    wallet: WalletConfig,
+    context: OwnedMiningContext,
+    challenge_params: ChallengeData,
+    reg_message: String,
+    live_stats: Arc<Mutex<LiveStats>>,
+) -> MiningResult {
+    // Add to currently mining list
+    {
+        let mut stats = live_stats.lock().unwrap();
+        stats.currently_mining.push(wallet.name.clone());
+    }
+
+    let mnemonic = wallet.mnemonic.clone();
+    let key_pair = cardano::derive_key_pair_from_mnemonic(&mnemonic, 0, 0);
+    let mining_address = key_pair.2.to_bech32().unwrap();
+
+    let wallet_config = DataDirMnemonic {
+        mnemonic: &mnemonic,
+        account: 0,
+        deriv_index: 0,
+    };
+    let data_dir = DataDir::Mnemonic(wallet_config);
+
+    // Check for unsubmitted solutions (silent)
+    if let Some(ref base_dir) = context.data_dir {
+        let _ = check_for_unsubmitted_solutions(base_dir, &challenge_params.challenge_id, &mining_address, &data_dir);
+    }
+
+    // Check if already solved (silent)
+    if let Some(ref base_dir) = context.data_dir {
+        if let Ok(true) = is_solution_pending_in_queue(base_dir, &mining_address, &challenge_params.challenge_id) {
+            return MiningResult::AlreadySolved;
+        }
+
+        if let Ok(true) = receipt_exists_for_index(base_dir, &challenge_params.challenge_id, &wallet_config) {
+            return MiningResult::AlreadySolved;
+        }
+    }
+
+    // Register address (silent)
+    let _stats_result = api::fetch_statistics(&context.client, &context.api_url, &mining_address);
+    if _stats_result.is_err() {
+        let reg_signature = cardano::cip8_sign(&key_pair, &reg_message);
+        if let Err(e) = api::register_address(
+            &context.client,
+            &context.api_url,
+            &mining_address,
+            &reg_message,
+            &reg_signature.0,
+            &hex::encode(key_pair.1.as_ref()),
+        ) {
+            let error_str = e.to_string();
+            if !error_str.contains("400") && !error_str.contains("Bad Request") {
+                return MiningResult::MiningFailed;
+            }
+        }
+    }
+
+    // Save challenge (silent)
+    if let Some(ref base_dir) = context.data_dir {
+        let _ = data_dir.save_challenge(base_dir, &challenge_params);
+    }
+
+    // Run mining cycle (silent)
+    let (result, _total_hashes, _elapsed_secs) = run_single_mining_cycle(
+        mining_address.clone(),
+        context.threads,
+        context.donate_to_option.as_ref(),
+        &challenge_params,
+        context.data_dir.as_deref(),
+    );
+
+    // Handle donation (silent)
+    if result == MiningResult::FoundAndQueued {
+        if let Some(ref destination_address) = context.donate_to_option {
+            let donation_message = format!("Assign accumulated Scavenger rights to: {}", destination_address);
+            let donation_signature = cardano::cip8_sign(&key_pair, &donation_message);
+            let _ = api::donate_to(&context.client, &context.api_url, &mining_address, destination_address, &donation_signature.0);
+        }
+    }
+
+    result
+}
+
+/// Helper function to mine with a single wallet (legacy verbose version)
 fn mine_single_wallet(
     wallet: WalletConfig,
     context: OwnedMiningContext,

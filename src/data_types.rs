@@ -304,8 +304,20 @@ impl<'a> DataDir<'a> {
         std::fs::create_dir_all(&path)
             .map_err(|e| format!("Could not create pending_submissions directory: {}", e))?;
 
+        // Sanitize challenge_id for Windows filename compatibility
+        let sanitized_challenge_id = solution.challenge_id
+            .replace('*', "")
+            .replace(':', "_")
+            .replace('<', "_")
+            .replace('>', "_")
+            .replace('\"', "_")
+            .replace('/', "_")
+            .replace('\\', "_")
+            .replace('|', "_")
+            .replace('?', "_");
+
         // Use a unique file name based on challenge, address, and nonce
-        path.push(format!("{}_{}_{}.json", solution.address, solution.challenge_id, solution.nonce));
+        path.push(format!("{}_{}_{}.json", solution.address, sanitized_challenge_id, solution.nonce));
 
         let solution_json = serde_json::to_string(solution)
             .map_err(|e| format!("Could not serialize pending solution: {}", e))?;
@@ -356,13 +368,25 @@ pub fn is_solution_pending_in_queue(base_dir: &str, address: &str, challenge_id:
     let mut path = PathBuf::from(base_dir);
     path.push("pending_submissions");
 
+    // Sanitize challenge_id for Windows filename compatibility (same as save_pending_solution)
+    let sanitized_challenge_id = challenge_id
+        .replace('*', "")
+        .replace(':', "_")
+        .replace('<', "_")
+        .replace('>', "_")
+        .replace('\"', "_")
+        .replace('/', "_")
+        .replace('\\', "_")
+        .replace('|', "_")
+        .replace('?', "_");
+
     // Scan for any file that matches the address and challenge ID prefix
     if let Ok(entries) = std::fs::read_dir(&path) {
         for entry in entries.filter_map(|e| e.ok()) {
             if let Some(filename) = entry.file_name().to_str() {
                 // Check if the filename starts with the required prefix and is a JSON file
                 // The filename format is: address_challenge_id_nonce.json
-                if filename.starts_with(&format!("{}_{}_", address, challenge_id)) && filename.ends_with(".json") {
+                if filename.starts_with(&format!("{}_{}_", address, sanitized_challenge_id)) && filename.ends_with(".json") {
                     return Ok(true);
                 }
             }
