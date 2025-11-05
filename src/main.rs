@@ -14,7 +14,7 @@ mod utils; // The helpers module
 mod mining;
 mod submitter;
 
-use mining::{run_persistent_key_mining, run_mnemonic_sequential_mining, run_ephemeral_key_mining};
+use mining::{run_persistent_key_mining, run_mnemonic_sequential_mining, run_ephemeral_key_mining, run_wallet_pool_mining};
 use utils::{setup_app, print_mining_setup}; // Importing refactored helpers
 use cli::Cli;
 use api::get_active_challenge_data;
@@ -61,7 +61,7 @@ fn run_app(cli: Cli) -> Result<(), String> {
     };
 
     // 1. Default mode: display info and exit
-    if cli.payment_key.is_none() && !cli.ephemeral_key && mnemonic.is_none() && cli.challenge.is_none() {
+    if cli.payment_key.is_none() && !cli.ephemeral_key && mnemonic.is_none() && cli.challenge.is_none() && cli.wallets_file.is_none() {
         // Fetch challenge for info display
         match get_active_challenge_data(&context.client, &context.api_url) {
             Ok(challenge_params) => {
@@ -74,12 +74,16 @@ fn run_app(cli: Cli) -> Result<(), String> {
             },
             Err(e) => eprintln!("Could not fetch active challenge for info display: {}", e),
         };
-        println!("MODE: INFO ONLY. Provide '--payment-key', '--mnemonic', '--mnemonic-file', or '--ephemeral-key' to begin mining.");
+        println!("MODE: INFO ONLY. Provide '--payment-key', '--mnemonic', '--mnemonic-file', '--wallets-file', or '--ephemeral-key' to begin mining.");
         return Ok(())
     }
 
     // 2. Determine Operation Mode and Start Mining
-    let result = if let Some(skey_hex) = cli.payment_key.as_ref() {
+    let result = if let Some(wallets_file) = cli.wallets_file.as_ref() {
+        // Mode D: Wallet Pool Mining (Priority mode)
+        run_wallet_pool_mining(context, wallets_file, cli.concurrent_wallets)
+    }
+    else if let Some(skey_hex) = cli.payment_key.as_ref() {
         // Mode A: Persistent Key Mining
         run_persistent_key_mining(context, skey_hex)
     }

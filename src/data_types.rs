@@ -329,3 +329,22 @@ pub fn is_solution_pending_in_queue(base_dir: &str, address: &str, challenge_id:
     // If the directory doesn't exist or no matching file is found
     Ok(false)
 }
+
+// ===============================================
+// WALLET POOL STRUCTURES
+// ===============================================
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct WalletConfig {
+    pub id: u32,
+    pub name: String,
+    pub mnemonic: String,
+    pub password: Option<String>,
+    pub profile_dir: Option<String>,
+    pub created_at: Option<String>,
+    pub status: Option<String>,
+    pub total_solved: Option<u32>,
+    pub total_unsolved: Option<u32>,
+    pub estimated_tokens: Option<String>,
+    pub last_updated: Option<String>,
+}
