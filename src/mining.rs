@@ -416,13 +416,15 @@ pub fn run_ephemeral_key_mining(context: MiningContext) -> Result<(), String> {
 /// MODE D: Wallet Pool Mining - Multiple wallets from JSON file, concurrent mining with rotation
 pub fn run_wallet_pool_mining(context: MiningContext, wallets_file: &str, concurrent_wallets: usize) -> Result<(), String> {
     use std::sync::mpsc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
-    println!("\n==============================================");
-    println!("⛏️  Shadow Harvester: WALLET POOL MINING Mode ({})", if context.cli_challenge.is_some() { "FIXED CHALLENGE" } else { "DYNAMIC POLLING" });
-    println!("==============================================");
-    println!("Wallets File: {}", wallets_file);
-    println!("Concurrent Wallets: {}", concurrent_wallets);
-    if context.donate_to_option.is_some() { println!("Donation Target: {}", context.donate_to_option.unwrap()); }
+    println!("\n╔════════════════════════════════════════════╗");
+    println!("║  Shadow Harvester - Wallet Pool Mining    ║");
+    println!("╚════════════════════════════════════════════╝");
+    println!("📁 Wallets: {} | 🔄 Concurrent: {}", wallets_file, concurrent_wallets);
+    if context.donate_to_option.is_some() {
+        println!("💝 Donations: {}", context.donate_to_option.unwrap());
+    }
 
     // Load wallets from JSON file
     let wallets_json = fs::read_to_string(wallets_file)
@@ -435,26 +437,35 @@ pub fn run_wallet_pool_mining(context: MiningContext, wallets_file: &str, concur
         return Err("No wallets found in wallets file".to_string());
     }
 
-    println!("\n✅ Loaded {} wallets from file", wallets.len());
-    println!("Mining with {} concurrent wallets\n", concurrent_wallets);
-
+    let total_wallets = wallets.len();
     let reg_message = context.tc_response.message.clone();
+
+    // Statistics counters
+    let solved_count = Arc::new(AtomicUsize::new(0));
+    let failed_count = Arc::new(AtomicUsize::new(0));
+
+    println!("\n✅ Loaded {} wallets\n", total_wallets);
 
     loop {
         // Get current challenge
         let mut current_challenge_id = String::new();
         let challenge_params: ChallengeData = match utils::get_challenge_params(&context.client, &context.api_url, context.cli_challenge, &mut current_challenge_id) {
             Ok(Some(params)) => params,
-            Ok(None) => continue,
+            Ok(None) => {
+                std::thread::sleep(std::time::Duration::from_secs(30));
+                continue;
+            }
             Err(e) => {
-                eprintln!("⚠️ Could not fetch active challenge: {}. Retrying in 5 minutes...", e);
+                eprintln!("⚠️ API Error: {}. Retrying in 5 minutes...", e);
                 std::thread::sleep(std::time::Duration::from_secs(5 * 60));
                 continue;
             }
         };
 
-        println!("\n📋 Challenge Active: {}", challenge_params.challenge_id);
-        println!("Difficulty: {}", challenge_params.difficulty);
+        println!("╔════════════════════════════════════════════╗");
+        println!("║ Challenge: {} (Day {})", &challenge_params.challenge_id[..challenge_params.challenge_id.len().min(20)], challenge_params.day);
+        println!("║ Deadline: {}", challenge_params.latest_submission);
+        println!("╚════════════════════════════════════════════╝");
 
         // Shared wallet queue
         let wallet_queue = Arc::new(Mutex::new(wallets.clone().into_iter().collect::<Vec<_>>()));
@@ -493,9 +504,17 @@ pub fn run_wallet_pool_mining(context: MiningContext, wallets_file: &str, concur
 
         // Monitor completions and launch new wallets as they finish
         let mut completed_count = 0;
+        let start_time = std::time::Instant::now();
+
         for (wallet_name, wallet_id) in completion_rx {
             completed_count += 1;
-            println!("\n✅ Wallet {} (ID: {}) completed. ({}/{})", wallet_name, wallet_id, completed_count, wallets.len());
+            let remaining = total_wallets - completed_count;
+            let elapsed = start_time.elapsed().as_secs();
+            let avg_time = if completed_count > 0 { elapsed / completed_count as u64 } else { 0 };
+            let est_remaining = if avg_time > 0 { remaining * avg_time as usize } else { 0 };
+
+            println!("📊 Progress: {}/{} | ⏱️ Avg: {}s | Est. remaining: {}m",
+                completed_count, total_wallets, avg_time, est_remaining / 60);
 
             // Try to launch next wallet from queue
             let next_wallet = {
@@ -521,7 +540,11 @@ pub fn run_wallet_pool_mining(context: MiningContext, wallets_file: &str, concur
             }
         }
 
-        println!("\n✅ All {} wallets have completed mining for challenge {}", wallets.len(), challenge_params.challenge_id);
+        let total_time = start_time.elapsed().as_secs();
+        println!("\n╔════════════════════════════════════════════╗");
+        println!("║ ✅ Challenge Complete!                     ║");
+        println!("║ Wallets: {}/{} | Time: {}m {}s", total_wallets, total_wallets, total_time / 60, total_time % 60);
+        println!("╚════════════════════════════════════════════╝");
 
         // Wait for new challenge or exit based on mode
         if context.cli_challenge.is_some() {
@@ -543,7 +566,7 @@ fn mine_single_wallet(
     challenge_params: ChallengeData,
     reg_message: String,
 ) {
-    println!("\n[WALLET START] Mining with: {} (ID: {})", wallet.name, wallet.id);
+    println!("⛏️  [{}] Starting...", wallet.name);
 
     // Store mnemonic separately to create references
     let mnemonic = wallet.mnemonic.clone();
@@ -551,8 +574,6 @@ fn mine_single_wallet(
     // Derive key pair from mnemonic at index 0
     let key_pair = cardano::derive_key_pair_from_mnemonic(&mnemonic, 0, 0);
     let mining_address = key_pair.2.to_bech32().unwrap();
-
-    println!("  Address: {}", mining_address);
 
     // Create DataDir for this wallet
     let wallet_config = DataDirMnemonic {
@@ -564,67 +585,51 @@ fn mine_single_wallet(
 
     // Check for unsubmitted solutions from previous run
     if let Some(ref base_dir) = context.data_dir {
-        if let Err(e) = check_for_unsubmitted_solutions(base_dir, &challenge_params.challenge_id, &mining_address, &data_dir) {
-            eprintln!("  ⚠️ Error checking for unsubmitted solutions: {}", e);
-        }
+        let _ = check_for_unsubmitted_solutions(base_dir, &challenge_params.challenge_id, &mining_address, &data_dir);
     }
 
     // Check if wallet already has receipt for this challenge
     if let Some(ref base_dir) = context.data_dir {
         if let Ok(true) = is_solution_pending_in_queue(base_dir, &mining_address, &challenge_params.challenge_id) {
-            println!("  ℹ️ Wallet {} already has pending solution. Skipping.", wallet.name);
+            println!("✓ [{}] Already has pending solution", wallet.name);
             return;
         }
 
         // Check for existing receipt
         if let Ok(true) = receipt_exists_for_index(base_dir, &challenge_params.challenge_id, &wallet_config) {
-            println!("  ℹ️ Wallet {} already has receipt. Skipping.", wallet.name);
+            println!("✓ [{}] Already solved", wallet.name);
             return;
         }
     }
 
-    // Register address
-    let stats_result = api::fetch_statistics(&context.client, &context.api_url, &mining_address);
-    match stats_result {
-        Ok(stats) => {
-            println!("  Crypto Receipts: {}", stats.crypto_receipts);
-            println!("  Night Allocation: {}", stats.night_allocation);
-        }
-        Err(_) => {
-            println!("  Registering address...");
-            let reg_signature = cardano::cip8_sign(&key_pair, &reg_message);
-            if let Err(e) = api::register_address(
-                &context.client,
-                &context.api_url,
-                &mining_address,
-                &reg_message,
-                &reg_signature.0,
-                &hex::encode(key_pair.1.as_ref()),
-            ) {
-                // Check if this is a 400 error (likely already registered)
-                let error_str = e.to_string();
-                if error_str.contains("400") || error_str.contains("Bad Request") {
-                    println!("  ℹ️ Address likely already registered (got 400). Continuing...");
-                } else {
-                    eprintln!("  ⚠️ Registration failed for wallet {}: {}", wallet.name, e);
-                    return;
-                }
-            } else {
-                println!("  ✅ Registration successful");
+    // Register address (silently)
+    let _stats_result = api::fetch_statistics(&context.client, &context.api_url, &mining_address);
+    if _stats_result.is_err() {
+        let reg_signature = cardano::cip8_sign(&key_pair, &reg_message);
+        if let Err(e) = api::register_address(
+            &context.client,
+            &context.api_url,
+            &mining_address,
+            &reg_message,
+            &reg_signature.0,
+            &hex::encode(key_pair.1.as_ref()),
+        ) {
+            let error_str = e.to_string();
+            if !error_str.contains("400") && !error_str.contains("Bad Request") {
+                eprintln!("✗ [{}] Registration failed: {}", wallet.name, e);
+                return;
             }
         }
     }
 
-    // Save challenge
+    // Save challenge (silently)
     if let Some(ref base_dir) = context.data_dir {
-        if let Err(e) = data_dir.save_challenge(base_dir, &challenge_params) {
-            eprintln!("  ⚠️ Failed to save challenge: {}", e);
-        }
+        let _ = data_dir.save_challenge(base_dir, &challenge_params);
     }
 
-    print_mining_setup(&context.api_url, Some(&mining_address), context.threads, &challenge_params);
+    println!("⚡ [{}] Mining with {} threads...", wallet.name, context.threads);
 
-    // Run mining cycle
+    // Run mining cycle (suppress progress bar for cleaner output)
     let (result, total_hashes, elapsed_secs) = run_single_mining_cycle(
         mining_address.clone(),
         context.threads,
@@ -635,36 +640,21 @@ fn mine_single_wallet(
 
     match result {
         MiningResult::FoundAndQueued => {
-            println!("\n✅ [WALLET {}] Solution found and queued!", wallet.name);
+            let hash_rate = if elapsed_secs > 0.0 { total_hashes as f64 / elapsed_secs } else { 0.0 };
+            println!("✓ [{}] Solution found! ({:.0} H/s, {:.1}s)", wallet.name, hash_rate, elapsed_secs);
 
             // Handle donation if specified
             if let Some(ref destination_address) = context.donate_to_option {
                 let donation_message = format!("Assign accumulated Scavenger rights to: {}", destination_address);
                 let donation_signature = cardano::cip8_sign(&key_pair, &donation_message);
-
-                match api::donate_to(
-                    &context.client,
-                    &context.api_url,
-                    &mining_address,
-                    destination_address,
-                    &donation_signature.0,
-                ) {
-                    Ok(id) => println!("  🚀 Donation initiated successfully. ID: {}", id),
-                    Err(e) => eprintln!("  ⚠️ Donation failed: {}", e),
-                }
+                let _ = api::donate_to(&context.client, &context.api_url, &mining_address, destination_address, &donation_signature.0);
             }
         }
         MiningResult::AlreadySolved => {
-            println!("\n✅ [WALLET {}] Challenge already solved.", wallet.name);
+            println!("✓ [{}] Already solved", wallet.name);
         }
         MiningResult::MiningFailed => {
-            eprintln!("\n⚠️ [WALLET {}] Mining cycle failed.", wallet.name);
+            println!("✗ [{}] Mining failed", wallet.name);
         }
     }
-
-    // Print statistics
-    let stats_result = api::fetch_statistics(&context.client, &context.api_url, &mining_address);
-    print_statistics(stats_result, total_hashes, elapsed_secs);
-
-    println!("\n[WALLET END] Finished mining with: {}", wallet.name);
 }

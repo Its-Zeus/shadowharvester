@@ -59,8 +59,6 @@ pub fn register_address(
         pubkey
     );
 
-    println!("-> Attempting address registration for address: {}", address);
-
     let response = client
         .post(url)
         .header("Content-Type", "application/json; charset=utf-8")
@@ -68,9 +66,7 @@ pub fn register_address(
 
     let response = response.error_for_status()?;
 
-    let registration_receipt: RegistrationReceipt = response.json()?;
-    println!("✅ Address registered successfully.");
-    println!("Receipt: {}", registration_receipt.registration_receipt);
+    let _registration_receipt: RegistrationReceipt = response.json()?;
 
     Ok(())
 }
@@ -224,7 +220,6 @@ pub fn get_active_challenge_data(client: &blocking::Client, api_url: &str) -> Re
 
 pub fn fetch_statistics(client: &blocking::Client, api_url: &str, address: &str) -> Result<Statistics, String> {
     let url = format!("{}/statistics/{}", api_url, address);
-    println!("\n📊 Fetching statistics for address: {}", address);
 
     let response = client.get(url)
         .header("Accept", "application/json")
