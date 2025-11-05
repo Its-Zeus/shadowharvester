@@ -666,8 +666,9 @@ pub fn run_wallet_pool_mining(context: MiningContext, wallets_file: &str, concur
                                             stats.night_per_solution = (stars_per_day as f64 / network_stats.recent_crypto_receipts as f64) / 1_000_000.0;
 
                                             // Update all wallet estimations
+                                            let night_per_sol = stats.night_per_solution;
                                             for wallet in &mut stats.wallets {
-                                                wallet.estimated_night = wallet.solved_count as f64 * stats.night_per_solution;
+                                                wallet.estimated_night = wallet.solved_count as f64 * night_per_sol;
                                             }
                                         }
                                     }
@@ -732,11 +733,12 @@ pub fn run_wallet_pool_mining(context: MiningContext, wallets_file: &str, concur
             // Update wallet status based on result
             {
                 let mut stats = live_stats.lock().unwrap();
+                let night_per_sol = stats.night_per_solution;
                 if let Some(w) = stats.wallets.iter_mut().find(|w| w.name == wallet_name) {
                     w.status = match result {
                         MiningResult::FoundAndQueued => {
                             w.solved_count += 1;
-                            w.estimated_night = w.solved_count as f64 * stats.night_per_solution;
+                            w.estimated_night = w.solved_count as f64 * night_per_sol;
                             WalletStatus::Solved
                         },
                         MiningResult::AlreadySolved => WalletStatus::Skipped,
@@ -821,7 +823,7 @@ fn mine_single_wallet_quiet(
     context: OwnedMiningContext,
     challenge_params: ChallengeData,
     reg_message: String,
-    live_stats: Arc<Mutex<LiveStats>>,
+    _live_stats: Arc<Mutex<LiveStats>>,
 ) -> MiningResult {
     let mnemonic = wallet.mnemonic.clone();
     let key_pair = cardano::derive_key_pair_from_mnemonic(&mnemonic, 0, 0);
