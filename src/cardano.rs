@@ -45,8 +45,7 @@ pub fn harden_index(index: u32) -> u32 {
 }
 
 pub fn derive_key_pair_from_mnemonic(mnemonic: &str, account: u32, index: u32) -> KeyPairAndAddress {
-    // NOTE: This is a simplified, non-compliant derivation for demonstration purposes.
-    // A real Cardano application MUST use BIP39/BIP44-compliant HD derivation.
+    // BIP39/CIP-1852 compliant derivation for Cardano
     let bip39 = Mnemonic::parse(mnemonic).expect("Need a valid mnemonic");
     let entropy = bip39.clone().to_entropy();
     let mut pbkdf2_result = [0; XPRV_SIZE];
@@ -55,7 +54,7 @@ pub fn derive_key_pair_from_mnemonic(mnemonic: &str, account: u32, index: u32) -
     pbkdf2(&mut mac, &entropy, ITER, &mut pbkdf2_result);
     let xprv = XPrv::normalize_bytes_force3rd(pbkdf2_result);
 
-    // payment key 1852'/1815'/<account>'/0/<index>
+    // Derive payment key: m/1852'/1815'/<account>'/0/<index>
     let pay_xprv = &xprv
         .derive(ed25519_bip32::DerivationScheme::V2, harden_index(1852))
         .derive(ed25519_bip32::DerivationScheme::V2, harden_index(1815))
@@ -63,15 +62,29 @@ pub fn derive_key_pair_from_mnemonic(mnemonic: &str, account: u32, index: u32) -
         .derive(ed25519_bip32::DerivationScheme::V2, 0)
         .derive(ed25519_bip32::DerivationScheme::V2, index)
         .extended_secret_key();
+
+    // Derive stake key: m/1852'/1815'/<account>'/2/0
+    let stake_xprv = &xprv
+        .derive(ed25519_bip32::DerivationScheme::V2, harden_index(1852))
+        .derive(ed25519_bip32::DerivationScheme::V2, harden_index(1815))
+        .derive(ed25519_bip32::DerivationScheme::V2, harden_index(account))
+        .derive(ed25519_bip32::DerivationScheme::V2, 2)
+        .derive(ed25519_bip32::DerivationScheme::V2, 0)
+        .extended_secret_key();
+
     unsafe {
         let sk = SecretKeyExtended::from_bytes_unchecked(*pay_xprv);
         let vk = sk.public_key();
 
-        // Cardano (Shelley) address derivation
+        // Derive stake verification key
+        let stake_sk = SecretKeyExtended::from_bytes_unchecked(*stake_xprv);
+        let stake_vk = stake_sk.public_key();
+
+        // Create base address with both payment and stake keys (addr1q...)
         let addr = ShelleyAddress::new(
-            Network::Mainnet, // Assuming Mainnet environment
+            Network::Mainnet,
             ShelleyPaymentPart::key_hash(vk.compute_hash()),
-            ShelleyDelegationPart::Null
+            ShelleyDelegationPart::key_hash(stake_vk.compute_hash())
         );
         let sk_flex: FlexibleSecretKey = FlexibleSecretKey::Extended(sk);
 
