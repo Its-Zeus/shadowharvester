@@ -18,31 +18,39 @@ enum WalletStatus {
 }
 
 #[derive(Debug, Clone)]
+struct WalletStats {
+    name: String,
+    address: String,
+    status: WalletStatus,
+    solved_count: u32,
+    estimated_night: f64,
+}
+
+#[derive(Debug, Clone)]
 struct LiveStats {
-    total_wallets: usize,
-    solved: usize,
-    failed: usize,
-    skipped: usize,
-    currently_mining: Vec<String>,
+    wallets: Vec<WalletStats>,
     challenge_id: String,
     challenge_deadline: String,
     challenge_day: u8,
     next_challenge_time: Option<String>,
     start_time: Instant,
     total_network_solutions: u32,
-    estimated_night: f64,
+    night_per_solution: f64,
 }
 
 impl LiveStats {
     fn display(&self) {
-        // Clear screen and move to top
-        print!("\x1B[2J\x1B[H");
+        // Build entire display string first for smooth rendering
+        let mut output = String::with_capacity(10000);
 
         let elapsed = self.start_time.elapsed().as_secs();
-        let completed = self.solved + self.failed + self.skipped;
-        let remaining = self.total_wallets - completed;
-        let avg_time = if completed > 0 { elapsed / completed as u64 } else { 0 };
-        let est_remaining_mins = if avg_time > 0 && remaining > 0 { (remaining as u64 * avg_time) / 60 } else { 0 };
+        let solved = self.wallets.iter().filter(|w| w.status == WalletStatus::Solved).count();
+        let failed = self.wallets.iter().filter(|w| w.status == WalletStatus::Failed).count();
+        let skipped = self.wallets.iter().filter(|w| w.status == WalletStatus::Skipped).count();
+        let mining = self.wallets.iter().filter(|w| w.status == WalletStatus::Mining).count();
+        let waiting = self.wallets.iter().filter(|w| w.status == WalletStatus::Waiting).count();
+        let total_solved_count: u32 = self.wallets.iter().map(|w| w.solved_count).sum();
+        let total_estimated_night: f64 = self.wallets.iter().map(|w| w.estimated_night).sum();
 
         // Calculate next challenge countdown
         let next_challenge_str = if let Some(ref next_time) = self.next_challenge_time {
@@ -61,79 +69,52 @@ impl LiveStats {
             "N/A".to_string()
         };
 
-        println!("╔══════════════════════════════════════════════════════════╗");
-        println!("║       🚀 Shadow Harvester - Live Mining Dashboard       ║");
-        println!("╠══════════════════════════════════════════════════════════╣");
-        println!("║  📋 CURRENT CHALLENGE                                    ║");
-        println!("╠══════════════════════════════════════════════════════════╣");
-        println!("║                                                          ║");
-        println!("║  ID: {:<51}║", self.challenge_id.chars().take(51).collect::<String>());
-        println!("║  Day: {:<50}║", self.challenge_day);
-        println!("║  ⏰ Deadline: {:<45}║", self.challenge_deadline.chars().take(45).collect::<String>());
-        println!("║  ⏭️  Next Challenge: {:<40}║", next_challenge_str);
-        println!("║                                                          ║");
-        println!("╠══════════════════════════════════════════════════════════╣");
-        println!("║  📊 LOCAL PROGRESS                                       ║");
-        println!("╠══════════════════════════════════════════════════════════╣");
-        println!("║                                                          ║");
-        println!("║  Total Wallets:      {:<35} ║", self.total_wallets);
-        println!("║  ✅ Solved:          {:<35} ║", self.solved);
-        println!("║  ✓  Skipped:         {:<35} ║", self.skipped);
-        println!("║  ✗  Failed:          {:<35} ║", self.failed);
-        println!("║  ⏳ Remaining:       {:<35} ║", remaining);
-        println!("║                                                          ║");
-        println!("╠══════════════════════════════════════════════════════════╣");
-        println!("║  💰 REWARDS ESTIMATION                                   ║");
-        println!("╠══════════════════════════════════════════════════════════╣");
-        println!("║                                                          ║");
-        println!("║  Est. NIGHT Tokens:  {:.6} {:<27}║", self.estimated_night, "");
-        println!("║  Network Solutions:  {:<35} ║", self.total_network_solutions);
-        println!("║                                                          ║");
-        println!("╠══════════════════════════════════════════════════════════╣");
-        println!("║  ⏱️  TIMING                                               ║");
-        println!("╠══════════════════════════════════════════════════════════╣");
-        println!("║                                                          ║");
-        println!("║  Elapsed:            {}m {}s{:<27}║", elapsed / 60, elapsed % 60, "");
-        println!("║  Avg per wallet:     {}s{:<31}║", avg_time, "");
-        println!("║  Est. remaining:     {}m{:<31}║", est_remaining_mins, "");
-        println!("║                                                          ║");
-        println!("╠══════════════════════════════════════════════════════════╣");
-        println!("║  ⛏️  CURRENTLY MINING                                     ║");
-        println!("╠══════════════════════════════════════════════════════════╣");
-        println!("║                                                          ║");
+        // Header
+        output.push_str("╔═══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╗\n");
+        output.push_str("║                                        🚀 Shadow Harvester - Live Mining Dashboard                                                   ║\n");
+        output.push_str("╠═══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╣\n");
+        output.push_str(&format!("║ 📋 Challenge: {:<15} │ Day: {:<3} │ ⏰ Deadline: {:<23} │ ⏭️  Next: {:<15} │ ⏱️  Elapsed: {}m {}s {:>15}║\n",
+            self.challenge_id.chars().take(15).collect::<String>(),
+            self.challenge_day,
+            self.challenge_deadline.chars().take(23).collect::<String>(),
+            next_challenge_str,
+            elapsed / 60, elapsed % 60, ""));
+        output.push_str("╠═══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╣\n");
+        output.push_str(&format!("║ 📊 Summary: Total: {:<3} │ ✅ Solved: {:<3} │ ⛏️  Mining: {:<3} │ ⏳ Waiting: {:<3} │ ✗ Failed: {:<3} │ 💰 Total NIGHT: {:.6} │ 🌐 Network: {:<6}║\n",
+            self.wallets.len(), solved, mining, waiting, failed, total_estimated_night, self.total_network_solutions));
+        output.push_str("╠════╤══════════════╤════════════════════════════════════════════════════════════╤══════════╤═══════════╤════════════════════════════════════╣\n");
+        output.push_str("║ #  │ Wallet       │ Address                                                    │ Status   │ Solved    │ Est. NIGHT                         ║\n");
+        output.push_str("╠════╪══════════════╪════════════════════════════════════════════════════════════╪══════════╪═══════════╪════════════════════════════════════╣\n");
 
-        for (i, wallet_name) in self.currently_mining.iter().enumerate().take(5) {
-            println!("║  {}. {:<52}║", i + 1, wallet_name.chars().take(52).collect::<String>());
+        // Wallet rows
+        for (i, wallet) in self.wallets.iter().enumerate() {
+            let status_icon = match wallet.status {
+                WalletStatus::Mining => "⛏️  Mining",
+                WalletStatus::Solved => "✅ Solved",
+                WalletStatus::Failed => "✗  Failed",
+                WalletStatus::Skipped => "✓  Skipped",
+                WalletStatus::Waiting => "⏳ Waiting",
+            };
+
+            let addr_display = if wallet.address.len() > 58 {
+                format!("{}...", &wallet.address[..55])
+            } else {
+                format!("{:<58}", wallet.address)
+            };
+
+            output.push_str(&format!("║ {:<2} │ {:<12} │ {} │ {:<8} │ {:<9} │ {:.6} {:>25}║\n",
+                i + 1,
+                wallet.name.chars().take(12).collect::<String>(),
+                addr_display,
+                status_icon,
+                wallet.solved_count,
+                wallet.estimated_night, ""));
         }
 
-        // Fill empty slots
-        for i in self.currently_mining.len()..5 {
-            println!("║  {}. {:<52}║", i + 1, "-");
-        }
+        output.push_str("╚════╧══════════════╧════════════════════════════════════════════════════════════╧══════════╧═══════════╧════════════════════════════════════╝\n");
 
-        println!("║                                                          ║");
-        println!("╚══════════════════════════════════════════════════════════╝");
-        println!();
-
-        // Progress bar
-        let progress_pct = if self.total_wallets > 0 {
-            (completed as f64 / self.total_wallets as f64 * 100.0) as usize
-        } else {
-            0
-        };
-        let bar_width = 50;
-        let filled = (progress_pct * bar_width / 100).min(bar_width);
-        let empty = bar_width - filled;
-
-        print!("  [");
-        for _ in 0..filled {
-            print!("█");
-        }
-        for _ in 0..empty {
-            print!("░");
-        }
-        println!("] {}%", progress_pct);
-        println!();
+        // Print everything at once for smooth rendering
+        print!("\x1B[2J\x1B[H{}", output);
     }
 }
 
@@ -598,46 +579,55 @@ pub fn run_wallet_pool_mining(context: MiningContext, wallets_file: &str, concur
             Err(_) => None,
         };
 
-        // Fetch initial network statistics (use first wallet to get global stats)
-        let initial_network_stats = if let Some(first_wallet) = wallets.first() {
-            let mnemonic = &first_wallet.mnemonic;
+        // Initialize per-wallet statistics
+        println!("🔄 Initializing wallet statistics...");
+        let mut wallet_stats_vec = Vec::new();
+        let mut total_network_solutions = 0;
+        let mut night_per_solution = 0.0;
+
+        for wallet in &wallets {
+            let mnemonic = &wallet.mnemonic;
             let key_pair = cardano::derive_key_pair_from_mnemonic(mnemonic, 0, 0);
             let address = key_pair.2.to_bech32().unwrap();
-            api::fetch_statistics(&context.client, &context.api_url, &address).ok()
-        } else {
-            None
-        };
 
-        // Calculate initial NIGHT estimation
-        let initial_night = if let Some(ref stats) = initial_network_stats {
-            let day_index = (challenge_params.day as usize).saturating_sub(1);
-            if let Some(&stars_per_day) = star_rates.0.get(day_index) {
-                if stats.recent_crypto_receipts > 0 {
-                    (stars_per_day as f64 / stats.recent_crypto_receipts as f64) / 1_000_000.0
-                } else {
-                    0.0
-                }
-            } else {
-                0.0
-            }
-        } else {
-            0.0
-        };
+            // Fetch individual wallet stats
+            let (solved_count, estimated_night) = match api::fetch_statistics(&context.client, &context.api_url, &address) {
+                Ok(stats) => {
+                    total_network_solutions = stats.recent_crypto_receipts;
+
+                    // Calculate NIGHT per solution
+                    let day_index = (challenge_params.day as usize).saturating_sub(1);
+                    if let Some(&stars_per_day) = star_rates.0.get(day_index) {
+                        if stats.recent_crypto_receipts > 0 {
+                            night_per_solution = (stars_per_day as f64 / stats.recent_crypto_receipts as f64) / 1_000_000.0;
+                        }
+                    }
+
+                    let wallet_night = stats.crypto_receipts as f64 * night_per_solution;
+                    (stats.crypto_receipts, wallet_night)
+                },
+                Err(_) => (0, 0.0),
+            };
+
+            wallet_stats_vec.push(WalletStats {
+                name: wallet.name.clone(),
+                address: address.clone(),
+                status: WalletStatus::Waiting,
+                solved_count,
+                estimated_night,
+            });
+        }
 
         // Initialize live stats
         let live_stats = Arc::new(Mutex::new(LiveStats {
-            total_wallets,
-            solved: 0,
-            failed: 0,
-            skipped: 0,
-            currently_mining: Vec::new(),
+            wallets: wallet_stats_vec,
             challenge_id: challenge_params.challenge_id.clone(),
             challenge_deadline: challenge_params.latest_submission.clone(),
             challenge_day: challenge_params.day,
             next_challenge_time,
             start_time: Instant::now(),
-            total_network_solutions: initial_network_stats.as_ref().map(|s| s.recent_crypto_receipts).unwrap_or(0),
-            estimated_night: initial_night,
+            total_network_solutions,
+            night_per_solution,
         }));
 
         // Start display update thread with periodic stats fetching
@@ -648,7 +638,6 @@ pub fn run_wallet_pool_mining(context: MiningContext, wallets_file: &str, concur
         let api_url_clone = context.api_url.clone();
         let star_rates_clone = star_rates.clone();
         let challenge_day = challenge_params.day;
-        let first_wallet_mnemonic = wallets.first().map(|w| w.mnemonic.clone());
 
         let display_handle = thread::spawn(move || {
             let mut loop_count = 0;
@@ -660,19 +649,27 @@ pub fn run_wallet_pool_mining(context: MiningContext, wallets_file: &str, concur
 
                 // Update network statistics every 30 seconds (15 display cycles)
                 if loop_count % 15 == 0 {
-                    if let Some(ref mnemonic) = first_wallet_mnemonic {
-                        let key_pair = cardano::derive_key_pair_from_mnemonic(mnemonic, 0, 0);
-                        let address = key_pair.2.to_bech32().unwrap();
-                        if let Ok(network_stats) = api::fetch_statistics(&client_clone, &api_url_clone, &address) {
-                            if let Ok(mut stats) = stats_clone.lock() {
-                                stats.total_network_solutions = network_stats.recent_crypto_receipts;
+                    if let Ok(mut stats) = stats_clone.lock() {
+                        // Update network stats from first wallet
+                        if let Some(first_wallet) = stats.wallets.first() {
+                            let address = first_wallet.address.clone();
+                            drop(stats); // Release lock before API call
 
-                                // Recalculate NIGHT estimation
-                                let day_index = (challenge_day as usize).saturating_sub(1);
-                                if let Some(&stars_per_day) = star_rates_clone.0.get(day_index) {
-                                    if network_stats.recent_crypto_receipts > 0 {
-                                        let night_per_solution = (stars_per_day as f64 / network_stats.recent_crypto_receipts as f64) / 1_000_000.0;
-                                        stats.estimated_night = night_per_solution * stats.solved as f64;
+                            if let Ok(network_stats) = api::fetch_statistics(&client_clone, &api_url_clone, &address) {
+                                if let Ok(mut stats) = stats_clone.lock() {
+                                    stats.total_network_solutions = network_stats.recent_crypto_receipts;
+
+                                    // Recalculate NIGHT per solution
+                                    let day_index = (challenge_day as usize).saturating_sub(1);
+                                    if let Some(&stars_per_day) = star_rates_clone.0.get(day_index) {
+                                        if network_stats.recent_crypto_receipts > 0 {
+                                            stats.night_per_solution = (stars_per_day as f64 / network_stats.recent_crypto_receipts as f64) / 1_000_000.0;
+
+                                            // Update all wallet estimations
+                                            for wallet in &mut stats.wallets {
+                                                wallet.estimated_night = wallet.solved_count as f64 * stats.night_per_solution;
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -698,6 +695,14 @@ pub fn run_wallet_pool_mining(context: MiningContext, wallets_file: &str, concur
             };
 
             if let Some(wallet) = wallet_opt {
+                // Update wallet status to Mining
+                {
+                    let mut stats = live_stats.lock().unwrap();
+                    if let Some(w) = stats.wallets.iter_mut().find(|w| w.name == wallet.name) {
+                        w.status = WalletStatus::Mining;
+                    }
+                }
+
                 let context_clone = context.to_owned();
                 let challenge_params_clone = challenge_params.clone();
                 let reg_message_clone = reg_message.clone();
@@ -712,7 +717,7 @@ pub fn run_wallet_pool_mining(context: MiningContext, wallets_file: &str, concur
                         context_clone,
                         challenge_params_clone,
                         reg_message_clone,
-                        stats_clone,
+                        stats_clone.clone(),
                     );
                     let _ = completion_tx_clone.send((wallet.name.clone(), wallet.id, result));
                 });
@@ -724,15 +729,19 @@ pub fn run_wallet_pool_mining(context: MiningContext, wallets_file: &str, concur
 
         // Monitor completions and launch new wallets as they finish
         for (wallet_name, wallet_id, result) in completion_rx {
-            // Update stats based on result
+            // Update wallet status based on result
             {
                 let mut stats = live_stats.lock().unwrap();
-                stats.currently_mining.retain(|w| w != &wallet_name);
-
-                match result {
-                    MiningResult::FoundAndQueued => stats.solved += 1,
-                    MiningResult::AlreadySolved => stats.skipped += 1,
-                    MiningResult::MiningFailed => stats.failed += 1,
+                if let Some(w) = stats.wallets.iter_mut().find(|w| w.name == wallet_name) {
+                    w.status = match result {
+                        MiningResult::FoundAndQueued => {
+                            w.solved_count += 1;
+                            w.estimated_night = w.solved_count as f64 * stats.night_per_solution;
+                            WalletStatus::Solved
+                        },
+                        MiningResult::AlreadySolved => WalletStatus::Skipped,
+                        MiningResult::MiningFailed => WalletStatus::Failed,
+                    };
                 }
             }
 
@@ -743,6 +752,14 @@ pub fn run_wallet_pool_mining(context: MiningContext, wallets_file: &str, concur
             };
 
             if let Some(wallet) = next_wallet {
+                // Update new wallet status to Mining
+                {
+                    let mut stats = live_stats.lock().unwrap();
+                    if let Some(w) = stats.wallets.iter_mut().find(|w| w.name == wallet.name) {
+                        w.status = WalletStatus::Mining;
+                    }
+                }
+
                 let context_clone = context.to_owned();
                 let challenge_params_clone = challenge_params.clone();
                 let reg_message_clone = reg_message.clone();
@@ -772,11 +789,15 @@ pub fn run_wallet_pool_mining(context: MiningContext, wallets_file: &str, concur
             stats.display();
 
             let total_time = stats.start_time.elapsed().as_secs();
+            let solved = stats.wallets.iter().filter(|w| w.status == WalletStatus::Solved).count();
+            let skipped = stats.wallets.iter().filter(|w| w.status == WalletStatus::Skipped).count();
+            let failed = stats.wallets.iter().filter(|w| w.status == WalletStatus::Failed).count();
+
             println!();
             println!("╔══════════════════════════════════════════════════════════╗");
             println!("║              ✅ Challenge Complete!                      ║");
             println!("╠══════════════════════════════════════════════════════════╣");
-            println!("║  Solved:   {}  |  Skipped: {}  |  Failed: {}              ║", stats.solved, stats.skipped, stats.failed);
+            println!("║  Solved:   {}  |  Skipped: {}  |  Failed: {}              ║", solved, skipped, failed);
             println!("║  Total Time: {}m {}s                                      ║", total_time / 60, total_time % 60);
             println!("╚══════════════════════════════════════════════════════════╝");
         }
@@ -802,12 +823,6 @@ fn mine_single_wallet_quiet(
     reg_message: String,
     live_stats: Arc<Mutex<LiveStats>>,
 ) -> MiningResult {
-    // Add to currently mining list
-    {
-        let mut stats = live_stats.lock().unwrap();
-        stats.currently_mining.push(wallet.name.clone());
-    }
-
     let mnemonic = wallet.mnemonic.clone();
     let key_pair = cardano::derive_key_pair_from_mnemonic(&mnemonic, 0, 0);
     let mining_address = key_pair.2.to_bech32().unwrap();
