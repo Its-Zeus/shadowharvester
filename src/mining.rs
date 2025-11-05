@@ -601,10 +601,17 @@ fn mine_single_wallet(
                 &reg_signature.0,
                 &hex::encode(key_pair.1.as_ref()),
             ) {
-                eprintln!("  ⚠️ Registration failed for wallet {}: {}", wallet.name, e);
-                return;
+                // Check if this is a 400 error (likely already registered)
+                let error_str = e.to_string();
+                if error_str.contains("400") || error_str.contains("Bad Request") {
+                    println!("  ℹ️ Address likely already registered (got 400). Continuing...");
+                } else {
+                    eprintln!("  ⚠️ Registration failed for wallet {}: {}", wallet.name, e);
+                    return;
+                }
+            } else {
+                println!("  ✅ Registration successful");
             }
-            println!("  ✅ Registration successful");
         }
     }
 

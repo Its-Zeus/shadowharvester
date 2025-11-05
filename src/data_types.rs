@@ -214,7 +214,18 @@ pub struct DataDirMnemonic<'a> {
 impl<'a> DataDir<'a> {
     pub fn challenge_dir(&'a self, base_dir: &str, challenge_id: &str) -> Result<PathBuf, String> {
         let mut path = PathBuf::from(base_dir);
-        path.push(challenge_id);
+        // Sanitize challenge_id for Windows compatibility - remove invalid filename characters
+        let sanitized_challenge_id = challenge_id
+            .replace('*', "")
+            .replace(':', "_")
+            .replace('<', "_")
+            .replace('>', "_")
+            .replace('\"', "_")
+            .replace('/', "_")
+            .replace('\\', "_")
+            .replace('|', "_")
+            .replace('?', "_");
+        path.push(sanitized_challenge_id);
         Ok(path)
     }
 
