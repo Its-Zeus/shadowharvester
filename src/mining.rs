@@ -26,7 +26,11 @@ struct LiveStats {
     currently_mining: Vec<String>,
     challenge_id: String,
     challenge_deadline: String,
+    challenge_day: u8,
+    next_challenge_time: Option<String>,
     start_time: Instant,
+    total_network_solutions: u32,
+    estimated_night: f64,
 }
 
 impl LiveStats {
@@ -40,15 +44,36 @@ impl LiveStats {
         let avg_time = if completed > 0 { elapsed / completed as u64 } else { 0 };
         let est_remaining_mins = if avg_time > 0 && remaining > 0 { (remaining as u64 * avg_time) / 60 } else { 0 };
 
+        // Calculate next challenge countdown
+        let next_challenge_str = if let Some(ref next_time) = self.next_challenge_time {
+            if let Ok(next_dt) = chrono::DateTime::parse_from_rfc3339(next_time) {
+                let now = chrono::Utc::now();
+                let diff = next_dt.signed_duration_since(now);
+                if diff.num_seconds() > 0 {
+                    format!("{}m {}s", diff.num_minutes(), diff.num_seconds() % 60)
+                } else {
+                    "Now!".to_string()
+                }
+            } else {
+                "Unknown".to_string()
+            }
+        } else {
+            "N/A".to_string()
+        };
+
         println!("╔══════════════════════════════════════════════════════════╗");
         println!("║       🚀 Shadow Harvester - Live Mining Dashboard       ║");
         println!("╠══════════════════════════════════════════════════════════╣");
+        println!("║  📋 CURRENT CHALLENGE                                    ║");
+        println!("╠══════════════════════════════════════════════════════════╣");
         println!("║                                                          ║");
-        println!("║  📋 Challenge: {:<44}║", self.challenge_id.chars().take(44).collect::<String>());
-        println!("║  ⏰ Deadline:  {:<44}║", self.challenge_deadline.chars().take(44).collect::<String>());
+        println!("║  ID: {:<51}║", self.challenge_id.chars().take(51).collect::<String>());
+        println!("║  Day: {:<50}║", self.challenge_day);
+        println!("║  ⏰ Deadline: {:<45}║", self.challenge_deadline.chars().take(45).collect::<String>());
+        println!("║  ⏭️  Next Challenge: {:<40}║", next_challenge_str);
         println!("║                                                          ║");
         println!("╠══════════════════════════════════════════════════════════╣");
-        println!("║  📊 PROGRESS                                             ║");
+        println!("║  📊 LOCAL PROGRESS                                       ║");
         println!("╠══════════════════════════════════════════════════════════╣");
         println!("║                                                          ║");
         println!("║  Total Wallets:      {:<35} ║", self.total_wallets);
@@ -56,6 +81,13 @@ impl LiveStats {
         println!("║  ✓  Skipped:         {:<35} ║", self.skipped);
         println!("║  ✗  Failed:          {:<35} ║", self.failed);
         println!("║  ⏳ Remaining:       {:<35} ║", remaining);
+        println!("║                                                          ║");
+        println!("╠══════════════════════════════════════════════════════════╣");
+        println!("║  💰 REWARDS ESTIMATION                                   ║");
+        println!("╠══════════════════════════════════════════════════════════╣");
+        println!("║                                                          ║");
+        println!("║  Est. NIGHT Tokens:  {:.6} {:<27}║", self.estimated_night, "");
+        println!("║  Network Solutions:  {:<35} ║", self.total_network_solutions);
         println!("║                                                          ║");
         println!("╠══════════════════════════════════════════════════════════╣");
         println!("║  ⏱️  TIMING                                               ║");
@@ -556,6 +588,42 @@ pub fn run_wallet_pool_mining(context: MiningContext, wallets_file: &str, concur
             }
         };
 
+        // Fetch work_to_star_rate for NIGHT estimation
+        let star_rates = api::fetch_work_to_star_rate(&context.client, &context.api_url)
+            .unwrap_or(crate::data_types::WorkToStarRate(vec![]));
+
+        // Get challenge response for next_challenge_starts_at
+        let next_challenge_time = match api::fetch_challenge_status(&context.client, &context.api_url) {
+            Ok(challenge_response) => challenge_response.next_challenge_starts_at,
+            Err(_) => None,
+        };
+
+        // Fetch initial network statistics (use first wallet to get global stats)
+        let initial_network_stats = if let Some(first_wallet) = wallets.first() {
+            let mnemonic = &first_wallet.mnemonic;
+            let key_pair = cardano::derive_key_pair_from_mnemonic(mnemonic, 0, 0);
+            let address = key_pair.2.to_bech32().unwrap();
+            api::fetch_statistics(&context.client, &context.api_url, &address).ok()
+        } else {
+            None
+        };
+
+        // Calculate initial NIGHT estimation
+        let initial_night = if let Some(ref stats) = initial_network_stats {
+            let day_index = (challenge_params.day as usize).saturating_sub(1);
+            if let Some(&stars_per_day) = star_rates.0.get(day_index) {
+                if stats.recent_crypto_receipts > 0 {
+                    (stars_per_day as f64 / stats.recent_crypto_receipts as f64) / 1_000_000.0
+                } else {
+                    0.0
+                }
+            } else {
+                0.0
+            }
+        } else {
+            0.0
+        };
+
         // Initialize live stats
         let live_stats = Arc::new(Mutex::new(LiveStats {
             total_wallets,
@@ -565,19 +633,54 @@ pub fn run_wallet_pool_mining(context: MiningContext, wallets_file: &str, concur
             currently_mining: Vec::new(),
             challenge_id: challenge_params.challenge_id.clone(),
             challenge_deadline: challenge_params.latest_submission.clone(),
+            challenge_day: challenge_params.day,
+            next_challenge_time,
             start_time: Instant::now(),
+            total_network_solutions: initial_network_stats.as_ref().map(|s| s.recent_crypto_receipts).unwrap_or(0),
+            estimated_night: initial_night,
         }));
 
-        // Start display update thread
+        // Start display update thread with periodic stats fetching
         let stats_clone = Arc::clone(&live_stats);
         let display_running = Arc::new(AtomicBool::new(true));
         let display_running_clone = Arc::clone(&display_running);
+        let client_clone = context.client.clone();
+        let api_url_clone = context.api_url.clone();
+        let star_rates_clone = star_rates.clone();
+        let challenge_day = challenge_params.day;
+        let first_wallet_mnemonic = wallets.first().map(|w| w.mnemonic.clone());
 
         let display_handle = thread::spawn(move || {
+            let mut loop_count = 0;
             while display_running_clone.load(Ordering::SeqCst) {
+                // Display current stats every iteration
                 if let Ok(stats) = stats_clone.lock() {
                     stats.display();
                 }
+
+                // Update network statistics every 30 seconds (15 display cycles)
+                if loop_count % 15 == 0 {
+                    if let Some(ref mnemonic) = first_wallet_mnemonic {
+                        let key_pair = cardano::derive_key_pair_from_mnemonic(mnemonic, 0, 0);
+                        let address = key_pair.2.to_bech32().unwrap();
+                        if let Ok(network_stats) = api::fetch_statistics(&client_clone, &api_url_clone, &address) {
+                            if let Ok(mut stats) = stats_clone.lock() {
+                                stats.total_network_solutions = network_stats.recent_crypto_receipts;
+
+                                // Recalculate NIGHT estimation
+                                let day_index = (challenge_day as usize).saturating_sub(1);
+                                if let Some(&stars_per_day) = star_rates_clone.0.get(day_index) {
+                                    if network_stats.recent_crypto_receipts > 0 {
+                                        let night_per_solution = (stars_per_day as f64 / network_stats.recent_crypto_receipts as f64) / 1_000_000.0;
+                                        stats.estimated_night = night_per_solution * stats.solved as f64;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                loop_count += 1;
                 thread::sleep(Duration::from_secs(2));
             }
         });

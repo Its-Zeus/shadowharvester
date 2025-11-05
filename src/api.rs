@@ -5,7 +5,8 @@ use reqwest::blocking;
 // FIX: Import structs from the new module location
 use crate::data_types::{
     TandCResponse, RegistrationReceipt, ChallengeData, ChallengeResponse,
-    SolutionReceipt, DonateResponse, Statistics, StatisticsApiResponse, CliChallengeData, ApiErrorResponse
+    SolutionReceipt, DonateResponse, Statistics, StatisticsApiResponse, CliChallengeData, ApiErrorResponse,
+    WorkToStarRate
 };
 
 // --- API FUNCTIONS ---
@@ -255,5 +256,25 @@ pub fn fetch_statistics(client: &blocking::Client, api_url: &str, address: &str)
                 Err(format!("HTTP Error {} with unparseable body: {}", status.as_u16(), body_text))
             }
         }
+    }
+}
+
+/// Fetch STAR allocation rates per day from /work_to_star_rate
+pub fn fetch_work_to_star_rate(client: &blocking::Client, api_url: &str) -> Result<WorkToStarRate, String> {
+    let url = format!("{}/work_to_star_rate", api_url);
+
+    let response = client.get(url)
+        .header("Accept", "application/json")
+        .send()
+        .map_err(|e| format!("Network/Client Error: {}", e))?;
+
+    let status = response.status();
+
+    if status.is_success() {
+        let rates: Vec<u64> = response.json()
+            .map_err(|e| format!("JSON parsing failed: {}", e))?;
+        Ok(WorkToStarRate(rates))
+    } else {
+        Err(format!("API Error: HTTP {}", status.as_u16()))
     }
 }

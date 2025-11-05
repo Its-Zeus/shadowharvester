@@ -100,6 +100,10 @@ pub struct StatisticsApiResponse {
     pub local: LocalStatistics,
 }
 
+// Response from /work_to_star_rate endpoint
+#[derive(Debug, Deserialize, Clone)]
+pub struct WorkToStarRate(pub Vec<u64>);
+
 #[derive(Debug)]
 pub struct Statistics {
     // Local Address (Added by the client)

@@ -606,6 +606,9 @@ pub fn scavenge(
             .progress_chars("#>-"),
         );
 
+        // Hide progress bar for cleaner output in wallet pool mode
+        pb.set_draw_target(indicatif::ProgressDrawTarget::hidden());
+
         let mut found = Vec::new();
         let mut should_stop_after_found = false;
 
