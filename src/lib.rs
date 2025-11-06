@@ -489,7 +489,8 @@ pub enum Result {
 }
 
 // Helper to build the preimage string as specified in the API documentation
-// Order: nonce + address + challenge_id + difficulty + no_pre_mine + no_pre_mine_hour + latest_submission
+// Order: nonce + address + challenge_id + difficulty + no_pre_mine + latest_submission(ISO) + no_pre_mine_hour(unix)
+// NOTE: Despite confusing parameter names, latest_submission contains ISO timestamp, no_pre_mine_hour contains unix number
 pub fn build_preimage(
     nonce: u64,
     address: &str,
@@ -506,8 +507,10 @@ pub fn build_preimage(
     preimage.push_str(challenge_id);
     preimage.push_str(difficulty);
     preimage.push_str(no_pre_mine);
-    preimage.push_str(no_pre_mine_hour);  // FIX: no_pre_mine_hour comes BEFORE latest_submission
-    preimage.push_str(latest_submission);  // FIX: latest_submission comes AFTER no_pre_mine_hour
+    // CRITICAL: Despite confusing names, latest_submission contains ISO timestamp (goes first)
+    // and no_pre_mine_hour contains unix number (goes second)
+    preimage.push_str(latest_submission);  // ISO timestamp like "2025-11-07T10:59:59.000Z"
+    preimage.push_str(no_pre_mine_hour);   // Unix timestamp number like "684661578"
     preimage
 }
 
