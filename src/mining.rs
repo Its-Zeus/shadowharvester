@@ -692,6 +692,34 @@ pub fn run_wallet_pool_mining(context: MiningContext, wallets_file: &str, concur
         use std::sync::mpsc;
         let (result_tx, result_rx) = mpsc::channel();
 
+        // Start challenge monitoring thread
+        let monitor_running = Arc::new(AtomicBool::new(true));
+        let monitor_running_clone = Arc::clone(&monitor_running);
+        let current_challenge_id = challenge_params.challenge_id.clone();
+        let context_clone_monitor = context.to_owned();
+
+        let monitor_handle = thread::spawn(move || {
+            while monitor_running_clone.load(Ordering::SeqCst) {
+                thread::sleep(Duration::from_secs(30));
+
+                let mut temp_challenge_id = String::new();
+                if let Ok(Some(new_params)) = utils::get_challenge_params(
+                    &context_clone_monitor.client,
+                    &context_clone_monitor.api_url,
+                    context_clone_monitor.cli_challenge,
+                    &mut temp_challenge_id
+                ) {
+                    if new_params.challenge_id != current_challenge_id {
+                        eprintln!("\n🔄 NEW CHALLENGE DETECTED: {} → {}", current_challenge_id, new_params.challenge_id);
+                        eprintln!("   Stopping current mining to switch challenges...");
+                        monitor_running_clone.store(false, Ordering::SeqCst);
+                        return true; // Signal new challenge detected
+                    }
+                }
+            }
+            false // Normal exit
+        });
+
         let mut wallet_index = 0;
         let mut active_miners = 0;
 
@@ -734,8 +762,18 @@ pub fn run_wallet_pool_mining(context: MiningContext, wallets_file: &str, concur
 
         // Process results and dynamically rotate wallets
         let mut total_completed = 0;
+        let mut new_challenge_detected = false;
         while total_completed < wallets.len() {
-            if let Ok((wallet_name, result)) = result_rx.recv() {
+            // Check if monitor detected new challenge
+            if !monitor_running.load(Ordering::SeqCst) {
+                eprintln!("⚠️  New challenge detected! Stopping wallet rotation early.");
+                new_challenge_detected = true;
+                break;
+            }
+
+            // Use recv_timeout to periodically check monitor status
+            match result_rx.recv_timeout(Duration::from_secs(1)) {
+                Ok((wallet_name, result)) => {
                 active_miners -= 1;
                 total_completed += 1;
 
@@ -810,7 +848,31 @@ pub fn run_wallet_pool_mining(context: MiningContext, wallets_file: &str, concur
                     println!("✓ '{}' completed  ({}/{})",
                         wallet_name, total_completed, wallets.len());
                 }
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    // Timeout - just loop again to check monitor status
+                    continue;
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    // All senders dropped - shouldn't happen but break if it does
+                    eprintln!("⚠️  Channel disconnected unexpectedly");
+                    break;
+                }
             }
+        }
+
+        // Stop the monitor thread
+        monitor_running.store(false, Ordering::SeqCst);
+        let _ = monitor_handle.join();
+
+        if new_challenge_detected {
+            println!("\n⚡ Switching to new challenge immediately!");
+            // Stop display thread
+            display_running.store(false, Ordering::SeqCst);
+            let _ = display_handle.join();
+
+            // Immediately loop back to get the new challenge
+            continue;
         }
 
         println!("\n✅ All wallets processed for this challenge!");
