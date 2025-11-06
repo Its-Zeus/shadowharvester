@@ -415,6 +415,7 @@ pub fn hash(salt: &[u8], rom: &Rom, nb_loops: u32, nb_instrs: u32) -> [u8; 64] {
 pub fn hash_meets_difficulty(hash: &[u8], difficulty_mask: &[u8]) -> bool {
     let len = hash.len().min(difficulty_mask.len());
 
+    // Compare byte-by-byte (big-endian)
     for i in 0..len {
         if hash[i] < difficulty_mask[i] {
             return true;  // Hash is definitely less
@@ -424,7 +425,17 @@ pub fn hash_meets_difficulty(hash: &[u8], difficulty_mask: &[u8]) -> bool {
         // If equal, continue to next byte
     }
 
-    // If all bytes are equal up to comparison length, it meets difficulty
+    // If all compared bytes are equal, check remaining bytes
+    if hash.len() > difficulty_mask.len() {
+        // Hash has extra bytes - they must all be zero for hash to be <= difficulty
+        for i in difficulty_mask.len()..hash.len() {
+            if hash[i] != 0 {
+                return false; // Hash is larger due to non-zero trailing bytes
+            }
+        }
+    }
+
+    // All bytes equal (or hash is shorter/equal length with matching prefix)
     true
 }
 
@@ -538,6 +549,13 @@ fn spin(params: ChallengeParams, sender: Sender<Result>, stop_signal: Arc<Atomic
 
         // Use numeric comparison (hash <= difficulty_mask) instead of zero-bit counting
         if hash_meets_difficulty(&h, &params.difficulty_bytes) {
+            // DEBUG: Log details of found solution
+            eprintln!("\n[DEBUG] Solution candidate found:");
+            eprintln!("  Nonce: {:016x}", nonce_value);
+            eprintln!("  Hash (first 16 bytes): {}", hex::encode(&h[..16]));
+            eprintln!("  Difficulty mask: {}", hex::encode(&params.difficulty_bytes));
+            eprintln!("  Meets difficulty: true");
+
             if sender.send(Result::Found(nonce_value)).is_ok() {
                 // Sent the found nonce
             }
