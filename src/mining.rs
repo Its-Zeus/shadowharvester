@@ -859,8 +859,39 @@ pub fn run_wallet_pool_mining(context: MiningContext, wallets_file: &str, concur
             println!("\n✅ Fixed challenge mode - all wallets completed. Exiting.");
             break;
         } else {
-            println!("\nWaiting for next challenge...");
-            std::thread::sleep(std::time::Duration::from_secs(5 * 60));
+            println!("\n⏳ Checking for next challenge...");
+            // Poll for new challenge instead of sleeping for 5 minutes
+            let mut attempts = 0;
+            let max_attempts = 60; // Check for up to 30 minutes (60 * 30 seconds)
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(30));
+                attempts += 1;
+
+                // Check if new challenge is available
+                let mut temp_challenge_id = String::new();
+                match utils::get_challenge_params(&context.client, &context.api_url, context.cli_challenge, &mut temp_challenge_id) {
+                    Ok(Some(new_params)) if new_params.challenge_id != last_challenge_id => {
+                        println!("✅ New challenge {} detected! Starting immediately...", new_params.challenge_id);
+                        break;
+                    }
+                    Ok(Some(_)) => {
+                        if attempts % 10 == 0 {
+                            println!("   Still waiting for new challenge... ({} minutes elapsed)", attempts / 2);
+                        }
+                    }
+                    Ok(None) => {
+                        println!("   No active challenge. Waiting...");
+                    }
+                    Err(e) => {
+                        eprintln!("   ⚠️ Error checking for new challenge: {}", e);
+                    }
+                }
+
+                if attempts >= max_attempts {
+                    println!("   Maximum wait time reached. Will retry on next cycle.");
+                    break;
+                }
+            }
         }
     }
 
