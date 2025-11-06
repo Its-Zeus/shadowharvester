@@ -706,7 +706,7 @@ pub fn run_wallet_pool_mining(context: MiningContext, wallets_file: &str, concur
                 if let Ok(Some(new_params)) = utils::get_challenge_params(
                     &context_clone_monitor.client,
                     &context_clone_monitor.api_url,
-                    context_clone_monitor.cli_challenge,
+                    context_clone_monitor.cli_challenge.as_ref(),
                     &mut temp_challenge_id
                 ) {
                     if new_params.challenge_id != current_challenge_id {
