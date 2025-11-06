@@ -414,28 +414,23 @@ pub fn hash(salt: &[u8], rom: &Rom, nb_loops: u32, nb_instrs: u32) -> [u8; 64] {
 // IMPORTANT: API uses per-byte validation (each byte must be <= difficulty byte)
 // NOT standard big-endian integer comparison - this matches API's actual behavior
 pub fn hash_meets_difficulty(hash: &[u8], difficulty_mask: &[u8]) -> bool {
-    // CRITICAL FIX: The API validates that EVERY byte must be <= corresponding difficulty byte
-    // This is NOT standard big-endian integer comparison, but we must match the API's behavior
+    // CRITICAL: The API uses byte-wise validation where EACH byte must be <= difficulty byte
+    // This rejects solutions that would pass standard big-endian integer comparison
     //
-    // Example that shows the difference:
-    // Hash: 0x00006ac9 (27337 decimal) vs Difficulty: 0x0000777F (30591 decimal)
-    // Standard comparison: 27337 < 30591 ✓ PASS
-    // API's byte-wise check: byte[3] 0xc9 > 0x7F ✗ FAIL
+    // Known test cases:
+    // - 0x00005520 vs 0x0000777F: All bytes pass → API ACCEPTED ✓
+    // - 0x00006ac9 vs 0x0000777F: Byte[3]=0xC9 > 0x7F → API REJECTED ✓
     //
-    // We must check each byte individually to match the API
+    // This method correctly predicted both outcomes.
 
     for i in 0..difficulty_mask.len() {
         if i >= hash.len() {
-            // Hash is shorter - treat missing bytes as 0x00
             return true;
         }
         if hash[i] > difficulty_mask[i] {
-            // This byte exceeds difficulty - reject immediately
             return false;
         }
     }
-
-    // All bytes are <= difficulty
     true
 }
 
@@ -551,9 +546,9 @@ fn spin(params: ChallengeParams, sender: Sender<Result>, stop_signal: Arc<Atomic
         let preimage_bytes = preimage_string.as_bytes();
         let h = hash(preimage_bytes, &params.rom, NB_LOOPS, NB_INSTRS);
 
-        // Use numeric comparison (hash <= difficulty_mask) instead of zero-bit counting
+        // Use byte-wise comparison (each hash byte must be <= corresponding difficulty byte)
         if hash_meets_difficulty(&h, &params.difficulty_bytes) {
-            // DEBUG: Log COMPLETE preimage details
+            // DEBUG: Log COMPLETE preimage details with byte-by-byte validation
             eprintln!("\n========== SOLUTION FOUND (FULL DEBUG) ==========");
             eprintln!("Nonce (hex): {:016x}", nonce_value);
             eprintln!("Address: {}", my_address);
@@ -566,10 +561,13 @@ fn spin(params: ChallengeParams, sender: Sender<Result>, stop_signal: Arc<Atomic
             eprintln!("{}", preimage_string);
             eprintln!("\n--- HASH OUTPUT (64 bytes) ---");
             eprintln!("{}", hex::encode(&h));
-            eprintln!("\n--- DIFFICULTY COMPARISON ---");
-            eprintln!("Difficulty bytes: {}", hex::encode(&params.difficulty_bytes));
-            eprintln!("Hash first 4 bytes: {}", hex::encode(&h[..4]));
-            eprintln!("Meets difficulty: true");
+            eprintln!("\n--- DIFFICULTY VALIDATION (Byte-wise) ---");
+            eprintln!("Difficulty: {}", hex::encode(&params.difficulty_bytes));
+            eprintln!("Hash first {} bytes: {}", params.difficulty_bytes.len(), hex::encode(&h[..params.difficulty_bytes.len()]));
+            for i in 0..params.difficulty_bytes.len() {
+                let passes = if h[i] <= params.difficulty_bytes[i] { "✓" } else { "✗" };
+                eprintln!("  Byte[{}]: 0x{:02x} <= 0x{:02x} {}", i, h[i], params.difficulty_bytes[i], passes);
+            }
             eprintln!("=================================================\n");
 
             if sender.send(Result::Found(nonce_value)).is_ok() {
