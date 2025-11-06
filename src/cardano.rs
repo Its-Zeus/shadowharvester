@@ -11,7 +11,7 @@ use cryptoxide::{hmac::Hmac, pbkdf2::pbkdf2, sha2::Sha512};
 use minicbor::*;
 
 use rand_core::{OsRng, RngCore};
-use bip39::{Mnemonic, Language};
+use bip39::Mnemonic;
 use ed25519_bip32::{self, XPrv, XPRV_SIZE};
 
 pub enum FlexibleSecretKey {
@@ -45,7 +45,7 @@ pub fn generate_mnemonic() -> String {
     let mut entropy = [0u8; 32]; // 256 bits = 24 words
     rng.fill_bytes(&mut entropy);
 
-    let mnemonic = Mnemonic::from_entropy(&entropy, Language::English)
+    let mnemonic = Mnemonic::from_entropy(&entropy)
         .expect("Failed to generate mnemonic from entropy");
 
     mnemonic.to_string()
