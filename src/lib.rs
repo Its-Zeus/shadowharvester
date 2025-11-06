@@ -410,28 +410,10 @@ pub fn hash(salt: &[u8], rom: &Rom, nb_loops: u32, nb_instrs: u32) -> [u8; 64] {
     vm.finalize()
 }
 
-// Compare hash against difficulty mask using byte-wise comparison
-// IMPORTANT: API uses per-byte validation (each byte must be <= difficulty byte)
-// NOT standard big-endian integer comparison - this matches API's actual behavior
-pub fn hash_meets_difficulty(hash: &[u8], difficulty_mask: &[u8]) -> bool {
-    // CRITICAL: The API uses byte-wise validation where EACH byte must be <= difficulty byte
-    // This rejects solutions that would pass standard big-endian integer comparison
-    //
-    // Known test cases:
-    // - 0x00005520 vs 0x0000777F: All bytes pass → API ACCEPTED ✓
-    // - 0x00006ac9 vs 0x0000777F: Byte[3]=0xC9 > 0x7F → API REJECTED ✓
-    //
-    // This method correctly predicted both outcomes.
-
-    for i in 0..difficulty_mask.len() {
-        if i >= hash.len() {
-            return true;
-        }
-        if hash[i] > difficulty_mask[i] {
-            return false;
-        }
-    }
-    true
+// Compare hash against difficulty using LEADING ZERO BITS method
+// This matches the API specification and test file validation
+pub fn hash_meets_difficulty_zero_bits(hash: &[u8], required_zero_bits: usize) -> bool {
+    hash_structure_good(hash, required_zero_bits)
 }
 
 // Legacy zero-bit counting method (kept for compatibility but may be inaccurate)
@@ -546,14 +528,15 @@ fn spin(params: ChallengeParams, sender: Sender<Result>, stop_signal: Arc<Atomic
         let preimage_bytes = preimage_string.as_bytes();
         let h = hash(preimage_bytes, &params.rom, NB_LOOPS, NB_INSTRS);
 
-        // Use byte-wise comparison (each hash byte must be <= corresponding difficulty byte)
-        if hash_meets_difficulty(&h, &params.difficulty_bytes) {
-            // DEBUG: Log COMPLETE preimage details with byte-by-byte validation
+        // Use leading zero bits method (matches API spec and test file)
+        if hash_meets_difficulty_zero_bits(&h, params.required_zero_bits) {
+            // DEBUG: Log COMPLETE preimage details
             eprintln!("\n========== SOLUTION FOUND (FULL DEBUG) ==========");
             eprintln!("Nonce (hex): {:016x}", nonce_value);
             eprintln!("Address: {}", my_address);
             eprintln!("Challenge ID: {}", params.challenge_id);
             eprintln!("Difficulty: {}", params.difficulty_mask);
+            eprintln!("Required zero bits: {}", params.required_zero_bits);
             eprintln!("ROM Key: {}", params.rom_key);
             eprintln!("Latest Submission: {}", params.latest_submission);
             eprintln!("No Pre-Mine Hour: {}", params.no_pre_mine_hour);
@@ -561,13 +544,19 @@ fn spin(params: ChallengeParams, sender: Sender<Result>, stop_signal: Arc<Atomic
             eprintln!("{}", preimage_string);
             eprintln!("\n--- HASH OUTPUT (64 bytes) ---");
             eprintln!("{}", hex::encode(&h));
-            eprintln!("\n--- DIFFICULTY VALIDATION (Byte-wise) ---");
-            eprintln!("Difficulty: {}", hex::encode(&params.difficulty_bytes));
-            eprintln!("Hash first {} bytes: {}", params.difficulty_bytes.len(), hex::encode(&h[..params.difficulty_bytes.len()]));
-            for i in 0..params.difficulty_bytes.len() {
-                let passes = if h[i] <= params.difficulty_bytes[i] { "✓" } else { "✗" };
-                eprintln!("  Byte[{}]: 0x{:02x} <= 0x{:02x} {}", i, h[i], params.difficulty_bytes[i], passes);
+            eprintln!("\n--- DIFFICULTY VALIDATION (Leading Zero Bits) ---");
+
+            // Count actual leading zero bits in hash
+            let mut actual_zero_bits = 0;
+            for &byte in h.iter() {
+                if byte == 0 {
+                    actual_zero_bits += 8;
+                } else {
+                    actual_zero_bits += byte.leading_zeros() as usize;
+                    break;
+                }
             }
+            eprintln!("Hash has {} leading zero bits (required: {})", actual_zero_bits, params.required_zero_bits);
             eprintln!("=================================================\n");
 
             if sender.send(Result::Found(nonce_value)).is_ok() {
