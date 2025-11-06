@@ -55,6 +55,7 @@ fn generate_wallets_file(count: usize, output_file: &str) -> Result<(), String> 
             total_solved: Some(0),
             total_unsolved: Some(0),
             estimated_tokens: Some("0.0".to_string()),
+            last_updated: Some(chrono::Utc::now().to_rfc3339()),
         };
         wallets.push(wallet);
     }
