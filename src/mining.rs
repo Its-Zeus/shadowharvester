@@ -553,6 +553,8 @@ pub fn run_wallet_pool_mining(context: MiningContext, wallets_file: &str, concur
 
     println!("\n✅ Loaded {} wallets\n", total_wallets);
 
+    let mut last_challenge_id = String::new();
+
     loop {
         // Get current challenge
         let mut current_challenge_id = String::new();
@@ -568,6 +570,14 @@ pub fn run_wallet_pool_mining(context: MiningContext, wallets_file: &str, concur
                 continue;
             }
         };
+
+        // Detect challenge change
+        if !last_challenge_id.is_empty() && last_challenge_id != challenge_params.challenge_id {
+            println!("\n🔄 NEW CHALLENGE DETECTED!");
+            println!("   Previous: {} → Current: {}", last_challenge_id, challenge_params.challenge_id);
+            println!("   ⚠️  Stopping all active mining to switch to new challenge...\n");
+        }
+        last_challenge_id = challenge_params.challenge_id.clone();
 
         // Fetch work_to_star_rate for NIGHT estimation
         let star_rates = api::fetch_work_to_star_rate(&context.client, &context.api_url)
@@ -595,7 +605,7 @@ pub fn run_wallet_pool_mining(context: MiningContext, wallets_file: &str, concur
                 Ok(stats) => {
                     total_network_solutions = stats.recent_crypto_receipts;
 
-                    // Calculate NIGHT per solution
+                    // Calculate NIGHT per solution for display
                     let day_index = (challenge_params.day as usize).saturating_sub(1);
                     if let Some(&stars_per_day) = star_rates.0.get(day_index) {
                         if stats.recent_crypto_receipts > 0 {
@@ -603,7 +613,8 @@ pub fn run_wallet_pool_mining(context: MiningContext, wallets_file: &str, concur
                         }
                     }
 
-                    let wallet_night = stats.crypto_receipts as f64 * night_per_solution;
+                    // Use the API-provided night_allocation (already calculated by server)
+                    let wallet_night = stats.night_allocation as f64 / 1_000_000.0;
                     (stats.crypto_receipts, wallet_night)
                 },
                 Err(_) => (0, 0.0),
@@ -659,17 +670,11 @@ pub fn run_wallet_pool_mining(context: MiningContext, wallets_file: &str, concur
                                 if let Ok(mut stats) = stats_clone.lock() {
                                     stats.total_network_solutions = network_stats.recent_crypto_receipts;
 
-                                    // Recalculate NIGHT per solution
+                                    // Update NIGHT per solution for display
                                     let day_index = (challenge_day as usize).saturating_sub(1);
                                     if let Some(&stars_per_day) = star_rates_clone.0.get(day_index) {
                                         if network_stats.recent_crypto_receipts > 0 {
                                             stats.night_per_solution = (stars_per_day as f64 / network_stats.recent_crypto_receipts as f64) / 1_000_000.0;
-
-                                            // Update all wallet estimations
-                                            let night_per_sol = stats.night_per_solution;
-                                            for wallet in &mut stats.wallets {
-                                                wallet.estimated_night = wallet.solved_count as f64 * night_per_sol;
-                                            }
                                         }
                                     }
                                 }
@@ -733,12 +738,21 @@ pub fn run_wallet_pool_mining(context: MiningContext, wallets_file: &str, concur
             // Update wallet status based on result
             {
                 let mut stats = live_stats.lock().unwrap();
-                let night_per_sol = stats.night_per_solution;
                 if let Some(w) = stats.wallets.iter_mut().find(|w| w.name == wallet_name) {
                     w.status = match result {
                         MiningResult::FoundAndQueued => {
-                            w.solved_count += 1;
-                            w.estimated_night = w.solved_count as f64 * night_per_sol;
+                            // Fetch fresh stats from API to get actual night_allocation
+                            let wallet_address = w.address.clone();
+                            drop(stats); // Release lock before API call
+
+                            if let Ok(wallet_stats) = api::fetch_statistics(&context.client, &context.api_url, &wallet_address) {
+                                if let Ok(mut stats) = live_stats.lock() {
+                                    if let Some(w) = stats.wallets.iter_mut().find(|w| w.name == wallet_name) {
+                                        w.solved_count = wallet_stats.crypto_receipts;
+                                        w.estimated_night = wallet_stats.night_allocation as f64 / 1_000_000.0;
+                                    }
+                                }
+                            }
                             WalletStatus::Solved
                         },
                         MiningResult::AlreadySolved => WalletStatus::Skipped,
