@@ -736,22 +736,31 @@ pub fn run_wallet_pool_mining(context: MiningContext, wallets_file: &str, concur
         // Monitor completions and launch new wallets as they finish
         for (wallet_name, wallet_id, result) in completion_rx {
             // Update wallet status based on result
+            // First, get wallet address if we need to fetch fresh stats
+            let wallet_address = if result == MiningResult::FoundAndQueued {
+                let stats = live_stats.lock().unwrap();
+                stats.wallets.iter().find(|w| w.name == wallet_name).map(|w| w.address.clone())
+            } else {
+                None
+            };
+
+            // Fetch fresh stats from API if needed (outside the lock)
+            let fresh_stats = if let Some(ref addr) = wallet_address {
+                api::fetch_statistics(&context.client, &context.api_url, addr).ok()
+            } else {
+                None
+            };
+
+            // Now update the wallet status with lock
             {
                 let mut stats = live_stats.lock().unwrap();
                 if let Some(w) = stats.wallets.iter_mut().find(|w| w.name == wallet_name) {
                     w.status = match result {
                         MiningResult::FoundAndQueued => {
-                            // Fetch fresh stats from API to get actual night_allocation
-                            let wallet_address = w.address.clone();
-                            drop(stats); // Release lock before API call
-
-                            if let Ok(wallet_stats) = api::fetch_statistics(&context.client, &context.api_url, &wallet_address) {
-                                if let Ok(mut stats) = live_stats.lock() {
-                                    if let Some(w) = stats.wallets.iter_mut().find(|w| w.name == wallet_name) {
-                                        w.solved_count = wallet_stats.crypto_receipts;
-                                        w.estimated_night = wallet_stats.night_allocation as f64 / 1_000_000.0;
-                                    }
-                                }
+                            // Update with fresh stats if available
+                            if let Some(ref wallet_stats) = fresh_stats {
+                                w.solved_count = wallet_stats.crypto_receipts;
+                                w.estimated_night = wallet_stats.night_allocation as f64 / 1_000_000.0;
                             }
                             WalletStatus::Solved
                         },
