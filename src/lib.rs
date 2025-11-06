@@ -410,8 +410,27 @@ pub fn hash(salt: &[u8], rom: &Rom, nb_loops: u32, nb_instrs: u32) -> [u8; 64] {
     vm.finalize()
 }
 
-// Compare hash against difficulty using LEADING ZERO BITS method
-// This matches the API specification and test file validation
+// Compare hash against difficulty using NUMERIC COMPARISON method
+// The API compares the first 4 bytes of hash as a 32-bit big-endian integer
+// against the difficulty value: hash_value <= difficulty_value
+pub fn hash_meets_difficulty(hash: &[u8], difficulty_bytes: &[u8]) -> bool {
+    if hash.len() < 4 || difficulty_bytes.len() < 4 {
+        return false;
+    }
+
+    // Extract first 4 bytes and compare as big-endian u32
+    let hash_value = u32::from_be_bytes([hash[0], hash[1], hash[2], hash[3]]);
+    let difficulty_value = u32::from_be_bytes([
+        difficulty_bytes[0],
+        difficulty_bytes[1],
+        difficulty_bytes[2],
+        difficulty_bytes[3],
+    ]);
+
+    hash_value <= difficulty_value
+}
+
+// Legacy function - kept for reference but should not be used
 pub fn hash_meets_difficulty_zero_bits(hash: &[u8], required_zero_bits: usize) -> bool {
     hash_structure_good(hash, required_zero_bits)
 }
@@ -528,15 +547,23 @@ fn spin(params: ChallengeParams, sender: Sender<Result>, stop_signal: Arc<Atomic
         let preimage_bytes = preimage_string.as_bytes();
         let h = hash(preimage_bytes, &params.rom, NB_LOOPS, NB_INSTRS);
 
-        // Use leading zero bits method (matches API spec and test file)
-        if hash_meets_difficulty_zero_bits(&h, params.required_zero_bits) {
+        // Use numeric comparison (matches API validation exactly)
+        if hash_meets_difficulty(&h, &params.difficulty_bytes) {
+            // Extract first 4 bytes for display
+            let hash_value = u32::from_be_bytes([h[0], h[1], h[2], h[3]]);
+            let difficulty_value = u32::from_be_bytes([
+                params.difficulty_bytes[0],
+                params.difficulty_bytes[1],
+                params.difficulty_bytes[2],
+                params.difficulty_bytes[3],
+            ]);
+
             // DEBUG: Log COMPLETE preimage details
             eprintln!("\n========== SOLUTION FOUND (FULL DEBUG) ==========");
             eprintln!("Nonce (hex): {:016x}", nonce_value);
             eprintln!("Address: {}", my_address);
             eprintln!("Challenge ID: {}", params.challenge_id);
             eprintln!("Difficulty: {}", params.difficulty_mask);
-            eprintln!("Required zero bits: {}", params.required_zero_bits);
             eprintln!("ROM Key: {}", params.rom_key);
             eprintln!("Latest Submission: {}", params.latest_submission);
             eprintln!("No Pre-Mine Hour: {}", params.no_pre_mine_hour);
@@ -544,19 +571,14 @@ fn spin(params: ChallengeParams, sender: Sender<Result>, stop_signal: Arc<Atomic
             eprintln!("{}", preimage_string);
             eprintln!("\n--- HASH OUTPUT (64 bytes) ---");
             eprintln!("{}", hex::encode(&h));
-            eprintln!("\n--- DIFFICULTY VALIDATION (Leading Zero Bits) ---");
-
-            // Count actual leading zero bits in hash
-            let mut actual_zero_bits = 0;
-            for &byte in h.iter() {
-                if byte == 0 {
-                    actual_zero_bits += 8;
-                } else {
-                    actual_zero_bits += byte.leading_zeros() as usize;
-                    break;
-                }
-            }
-            eprintln!("Hash has {} leading zero bits (required: {})", actual_zero_bits, params.required_zero_bits);
+            eprintln!("\n--- DIFFICULTY VALIDATION (Numeric Comparison) ---");
+            eprintln!("Hash prefix (hex): {:08x}", hash_value);
+            eprintln!("Hash value (dec): {}", hash_value);
+            eprintln!("Difficulty (hex): {:08x}", difficulty_value);
+            eprintln!("Difficulty (dec): {}", difficulty_value);
+            eprintln!("Hash <= Difficulty: {} ({})",
+                hash_value <= difficulty_value,
+                if hash_value <= difficulty_value { "PASS" } else { "FAIL" });
             eprintln!("=================================================\n");
 
             if sender.send(Result::Found(nonce_value)).is_ok() {
