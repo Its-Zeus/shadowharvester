@@ -688,19 +688,20 @@ pub fn run_wallet_pool_mining(context: MiningContext, wallets_file: &str, concur
             }
         });
 
-        // Shared wallet queue
-        let wallet_queue = Arc::new(Mutex::new(wallets.clone().into_iter().collect::<Vec<_>>()));
-        let (completion_tx, completion_rx) = mpsc::channel::<(String, u32, MiningResult)>();
+        // Process wallets in batches
+        let mut wallet_index = 0;
 
-        // Launch initial batch of mining threads
-        let mut active_count = 0;
-        for _ in 0..concurrent_wallets.min(wallets.len()) {
-            let wallet_opt = {
-                let mut queue = wallet_queue.lock().unwrap();
-                queue.pop()
-            };
+        while wallet_index < wallets.len() {
+            let batch_size = concurrent_wallets.min(wallets.len() - wallet_index);
+            let batch_wallets = &wallets[wallet_index..wallet_index + batch_size];
 
-            if let Some(wallet) = wallet_opt {
+            println!("\n🔄 Processing batch: wallets {}-{} of {}",
+                wallet_index + 1, wallet_index + batch_size, wallets.len());
+
+            // Track threads for this batch
+            let mut batch_threads = Vec::new();
+
+            for wallet in batch_wallets {
                 // Update wallet status to Mining
                 {
                     let mut stats = live_stats.lock().unwrap();
@@ -709,100 +710,69 @@ pub fn run_wallet_pool_mining(context: MiningContext, wallets_file: &str, concur
                     }
                 }
 
+                let wallet_clone = wallet.clone();
                 let context_clone = context.to_owned();
                 let challenge_params_clone = challenge_params.clone();
                 let reg_message_clone = reg_message.clone();
-                let completion_tx_clone = completion_tx.clone();
                 let stats_clone = Arc::clone(&live_stats);
 
-                active_count += 1;
-
-                thread::spawn(move || {
+                let handle = thread::spawn(move || {
                     let result = mine_single_wallet_quiet(
-                        wallet.clone(),
+                        wallet_clone.clone(),
                         context_clone,
                         challenge_params_clone,
                         reg_message_clone,
                         stats_clone.clone(),
                     );
-                    let _ = completion_tx_clone.send((wallet.name.clone(), wallet.id, result));
+                    (wallet_clone.name.clone(), result)
                 });
-            }
-        }
 
-        // Drop original sender so channel closes when all threads complete
-        drop(completion_tx);
-
-        // Monitor completions and launch new wallets as they finish
-        for (wallet_name, wallet_id, result) in completion_rx {
-            // Update wallet status based on result
-            // First, get wallet address if we need to fetch fresh stats
-            let wallet_address = if result == MiningResult::FoundAndQueued {
-                let stats = live_stats.lock().unwrap();
-                stats.wallets.iter().find(|w| w.name == wallet_name).map(|w| w.address.clone())
-            } else {
-                None
-            };
-
-            // Fetch fresh stats from API if needed (outside the lock)
-            let fresh_stats = if let Some(ref addr) = wallet_address {
-                api::fetch_statistics(&context.client, &context.api_url, addr).ok()
-            } else {
-                None
-            };
-
-            // Now update the wallet status with lock
-            {
-                let mut stats = live_stats.lock().unwrap();
-                if let Some(w) = stats.wallets.iter_mut().find(|w| w.name == wallet_name) {
-                    w.status = match result {
-                        MiningResult::FoundAndQueued => {
-                            // Update with fresh stats if available
-                            if let Some(ref wallet_stats) = fresh_stats {
-                                w.solved_count = wallet_stats.crypto_receipts;
-                                w.estimated_night = wallet_stats.night_allocation as f64 / 1_000_000.0;
-                            }
-                            WalletStatus::Solved
-                        },
-                        MiningResult::AlreadySolved => WalletStatus::Skipped,
-                        MiningResult::MiningFailed => WalletStatus::Failed,
-                    };
-                }
+                batch_threads.push(handle);
             }
 
-            // Try to launch next wallet from queue
-            let next_wallet = {
-                let mut queue = wallet_queue.lock().unwrap();
-                queue.pop()
-            };
+            // Wait for this batch to complete
+            for handle in batch_threads {
+                let (wallet_name, result) = handle.join().unwrap();
 
-            if let Some(wallet) = next_wallet {
-                // Update new wallet status to Mining
+                // Get wallet address if we need fresh stats
+                let wallet_address = if result == MiningResult::FoundAndQueued {
+                    let stats = live_stats.lock().unwrap();
+                    stats.wallets.iter().find(|w| w.name == wallet_name).map(|w| w.address.clone())
+                } else {
+                    None
+                };
+
+                // Fetch fresh stats from API if needed
+                let fresh_stats = if let Some(ref addr) = wallet_address {
+                    api::fetch_statistics(&context.client, &context.api_url, addr).ok()
+                } else {
+                    None
+                };
+
+                // Update the wallet status
                 {
                     let mut stats = live_stats.lock().unwrap();
-                    if let Some(w) = stats.wallets.iter_mut().find(|w| w.name == wallet.name) {
-                        w.status = WalletStatus::Mining;
+                    if let Some(w) = stats.wallets.iter_mut().find(|w| w.name == wallet_name) {
+                        w.status = match result {
+                            MiningResult::FoundAndQueued => {
+                                // Update with fresh stats if available
+                                if let Some(ref wallet_stats) = fresh_stats {
+                                    w.solved_count = wallet_stats.crypto_receipts;
+                                    w.estimated_night = wallet_stats.night_allocation as f64 / 1_000_000.0;
+                                }
+                                WalletStatus::Solved
+                            },
+                            MiningResult::AlreadySolved => WalletStatus::Skipped,
+                            MiningResult::MiningFailed => WalletStatus::Failed,
+                        };
                     }
                 }
-
-                let context_clone = context.to_owned();
-                let challenge_params_clone = challenge_params.clone();
-                let reg_message_clone = reg_message.clone();
-                let stats_clone = Arc::clone(&live_stats);
-
-                // Note: We can't use completion_tx here since it's dropped
-                // This is OK - the rotation happens only in the initial batch
-                thread::spawn(move || {
-                    let _result = mine_single_wallet_quiet(
-                        wallet,
-                        context_clone,
-                        challenge_params_clone,
-                        reg_message_clone,
-                        stats_clone,
-                    );
-                });
             }
+
+            wallet_index += batch_size;
         }
+
+        println!("\n✅ All wallets processed for this challenge!");
 
         // Stop display thread
         display_running.store(false, Ordering::SeqCst);

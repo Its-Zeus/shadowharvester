@@ -410,6 +410,25 @@ pub fn hash(salt: &[u8], rom: &Rom, nb_loops: u32, nb_instrs: u32) -> [u8; 64] {
     vm.finalize()
 }
 
+// Compare hash against difficulty mask as big-endian numbers
+// This is the correct method for proof-of-work validation
+pub fn hash_meets_difficulty(hash: &[u8], difficulty_mask: &[u8]) -> bool {
+    let len = hash.len().min(difficulty_mask.len());
+
+    for i in 0..len {
+        if hash[i] < difficulty_mask[i] {
+            return true;  // Hash is definitely less
+        } else if hash[i] > difficulty_mask[i] {
+            return false; // Hash exceeds difficulty
+        }
+        // If equal, continue to next byte
+    }
+
+    // If all bytes are equal up to comparison length, it meets difficulty
+    true
+}
+
+// Legacy zero-bit counting method (kept for compatibility but may be inaccurate)
 pub fn hash_structure_good(hash: &[u8], zero_bits: usize) -> bool {
     let full_bytes = zero_bits / 8; // Number of full zero bytes
     let remaining_bits = zero_bits % 8; // Bits to check in the next byte
