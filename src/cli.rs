@@ -63,6 +63,10 @@ pub struct Cli {
     /// Number of wallets to mine with concurrently (requires --wallets-file)
     #[arg(long, default_value_t = 1)]
     pub concurrent_wallets: usize,
+
+    /// Generate N new wallets and save to wallets.json (creates mnemonics automatically)
+    #[arg(long)]
+    pub generate_wallets: Option<usize>,
 }
 
 

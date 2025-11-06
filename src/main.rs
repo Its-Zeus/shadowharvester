@@ -2,6 +2,7 @@
 
 use clap::Parser;
 use std::thread; // ADDED
+use chrono;
 
 // Declare modules
 mod api;
@@ -18,10 +19,66 @@ use mining::{run_persistent_key_mining, run_mnemonic_sequential_mining, run_ephe
 use utils::{setup_app, print_mining_setup}; // Importing refactored helpers
 use cli::Cli;
 use api::get_active_challenge_data;
+use data_types::WalletConfig;
+use std::fs;
 
+/// Generate N wallets with random mnemonics and save to JSON file
+fn generate_wallets_file(count: usize, output_file: &str) -> Result<(), String> {
+    if count == 0 {
+        return Err("Cannot generate 0 wallets".to_string());
+    }
+
+    if count > 1000 {
+        return Err("Maximum 1000 wallets allowed per file".to_string());
+    }
+
+    println!("🔑 Generating {} new wallet(s)...", count);
+
+    let mut wallets = Vec::new();
+    for i in 1..=count {
+        let mnemonic = cardano::generate_mnemonic();
+
+        // Derive address for display purposes
+        let key_pair = cardano::derive_key_pair_from_mnemonic(&mnemonic, 0, 0);
+        let address = key_pair.2.to_bech32().unwrap();
+
+        println!("   Wallet {} - {}", i, address);
+
+        let wallet = WalletConfig {
+            id: i as u32,
+            name: format!("Wallet {}", i),
+            mnemonic,
+            password: None,
+            profile_dir: None,
+            created_at: Some(chrono::Utc::now().to_rfc3339()),
+            status: Some("active".to_string()),
+            total_solved: Some(0),
+            total_unsolved: Some(0),
+            estimated_tokens: Some("0.0".to_string()),
+        };
+        wallets.push(wallet);
+    }
+
+    let json = serde_json::to_string_pretty(&wallets)
+        .map_err(|e| format!("Failed to serialize wallets: {}", e))?;
+
+    fs::write(output_file, json)
+        .map_err(|e| format!("Failed to write wallets file '{}': {}", output_file, e))?;
+
+    println!("\n✅ Successfully generated {} wallet(s) and saved to '{}'", count, output_file);
+    println!("\n⚠️  IMPORTANT: Back up this file securely! It contains your wallet mnemonics.");
+    println!("   You can now start mining with: --wallets-file {}", output_file);
+
+    Ok(())
+}
 
 /// Runs the main application logic based on CLI flags.
 fn run_app(cli: Cli) -> Result<(), String> {
+    // Handle wallet generation mode (no API needed)
+    if let Some(count) = cli.generate_wallets {
+        return generate_wallets_file(count, cli.wallets_file.as_deref().unwrap_or("wallets.json"));
+    }
+
     let context = match setup_app(&cli) {
         Ok(c) => c,
         // Exit the app if a command like 'Challenges' was run successfully

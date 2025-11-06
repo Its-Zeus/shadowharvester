@@ -10,8 +10,8 @@ use pallas::{
 use cryptoxide::{hmac::Hmac, pbkdf2::pbkdf2, sha2::Sha512};
 use minicbor::*;
 
-use rand_core::{OsRng};
-use bip39::Mnemonic;
+use rand_core::{OsRng, RngCore};
+use bip39::{Mnemonic, Language};
 use ed25519_bip32::{self, XPrv, XPRV_SIZE};
 
 pub enum FlexibleSecretKey {
@@ -37,6 +37,18 @@ pub fn generate_cardano_key_and_address() -> KeyPairAndAddress {
 
     let sk_flex: FlexibleSecretKey = FlexibleSecretKey::Standard(sk);
     (sk_flex, vk, addr)
+}
+
+/// Generate a new 24-word BIP39 mnemonic phrase using cryptographically secure randomness
+pub fn generate_mnemonic() -> String {
+    let mut rng = OsRng;
+    let mut entropy = [0u8; 32]; // 256 bits = 24 words
+    rng.fill_bytes(&mut entropy);
+
+    let mnemonic = Mnemonic::from_entropy(&entropy, Language::English)
+        .expect("Failed to generate mnemonic from entropy");
+
+    mnemonic.to_string()
 }
 
 pub fn harden_index(index: u32) -> u32 {
