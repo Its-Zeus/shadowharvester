@@ -698,8 +698,12 @@ pub fn run_wallet_pool_mining(context: MiningContext, wallets_file: &str, concur
             println!("\n🔄 Processing batch: wallets {}-{} of {}",
                 wallet_index + 1, wallet_index + batch_size, wallets.len());
 
-            // Track threads for this batch
-            let mut batch_threads = Vec::new();
+            // Use channel to receive results as threads complete
+            use std::sync::mpsc;
+            let (result_tx, result_rx) = mpsc::channel();
+
+            // Track number of active threads
+            let active_threads = batch_wallets.len();
 
             for wallet in batch_wallets {
                 // Update wallet status to Mining
@@ -715,8 +719,9 @@ pub fn run_wallet_pool_mining(context: MiningContext, wallets_file: &str, concur
                 let challenge_params_clone = challenge_params.clone();
                 let reg_message_clone = reg_message.clone();
                 let stats_clone = Arc::clone(&live_stats);
+                let tx = result_tx.clone();
 
-                let handle = thread::spawn(move || {
+                thread::spawn(move || {
                     let result = mine_single_wallet_quiet(
                         wallet_clone.clone(),
                         context_clone,
@@ -724,47 +729,52 @@ pub fn run_wallet_pool_mining(context: MiningContext, wallets_file: &str, concur
                         reg_message_clone,
                         stats_clone.clone(),
                     );
-                    (wallet_clone.name.clone(), result)
+                    // Send result immediately when thread completes
+                    let _ = tx.send((wallet_clone.name.clone(), result));
                 });
-
-                batch_threads.push(handle);
             }
 
-            // Wait for this batch to complete
-            for handle in batch_threads {
-                let (wallet_name, result) = handle.join().unwrap();
+            // Drop the original sender so the channel closes when all threads complete
+            drop(result_tx);
 
-                // Get wallet address if we need fresh stats
-                let wallet_address = if result == MiningResult::FoundAndQueued {
-                    let stats = live_stats.lock().unwrap();
-                    stats.wallets.iter().find(|w| w.name == wallet_name).map(|w| w.address.clone())
-                } else {
-                    None
-                };
+            // Process results as they arrive (threads complete in any order)
+            let mut completed = 0;
+            while completed < active_threads {
+                if let Ok((wallet_name, result)) = result_rx.recv() {
+                    completed += 1;
 
-                // Fetch fresh stats from API if needed
-                let fresh_stats = if let Some(ref addr) = wallet_address {
-                    api::fetch_statistics(&context.client, &context.api_url, addr).ok()
-                } else {
-                    None
-                };
+                    // Get wallet address if we need fresh stats
+                    let wallet_address = if result == MiningResult::FoundAndQueued {
+                        let stats = live_stats.lock().unwrap();
+                        stats.wallets.iter().find(|w| w.name == wallet_name).map(|w| w.address.clone())
+                    } else {
+                        None
+                    };
 
-                // Update the wallet status
-                {
-                    let mut stats = live_stats.lock().unwrap();
-                    if let Some(w) = stats.wallets.iter_mut().find(|w| w.name == wallet_name) {
-                        w.status = match result {
-                            MiningResult::FoundAndQueued => {
-                                // Update with fresh stats if available
-                                if let Some(ref wallet_stats) = fresh_stats {
-                                    w.solved_count = wallet_stats.crypto_receipts;
-                                    w.estimated_night = wallet_stats.night_allocation as f64 / 1_000_000.0;
-                                }
-                                WalletStatus::Solved
-                            },
-                            MiningResult::AlreadySolved => WalletStatus::Skipped,
-                            MiningResult::MiningFailed => WalletStatus::Failed,
-                        };
+                    // Fetch fresh stats from API if needed
+                    let fresh_stats = if let Some(ref addr) = wallet_address {
+                        api::fetch_statistics(&context.client, &context.api_url, addr).ok()
+                    } else {
+                        None
+                    };
+
+                    // Update the wallet status IMMEDIATELY as soon as thread completes
+                    {
+                        let mut stats = live_stats.lock().unwrap();
+                        if let Some(w) = stats.wallets.iter_mut().find(|w| w.name == wallet_name) {
+                            w.status = match result {
+                                MiningResult::FoundAndQueued => {
+                                    // Update with fresh stats if available
+                                    if let Some(ref wallet_stats) = fresh_stats {
+                                        w.solved_count = wallet_stats.crypto_receipts;
+                                        w.estimated_night = wallet_stats.night_allocation as f64 / 1_000_000.0;
+                                    }
+                                    WalletStatus::Solved
+                                },
+                                MiningResult::AlreadySolved => WalletStatus::Skipped,
+                                MiningResult::MiningFailed => WalletStatus::Failed,
+                            };
+                        }
                     }
                 }
             }
