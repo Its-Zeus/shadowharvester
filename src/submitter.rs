@@ -80,6 +80,15 @@ fn process_pending_solution(client: &Client, api_url: &str, file_path: &Path, da
                 continue;
             },
             Err(e) => {
+                // Check if this is "Solution already exists" - treat this as success since wallet already solved it
+                if e.contains("Solution already exists") || e.contains("already exists") {
+                    eprintln!("✓ Wallet already submitted solution for this challenge. Marking as solved.");
+                    // Treat as success - wallet already solved this challenge, just missing local receipt
+                    final_receipt = Some(serde_json::json!({"note": "Solution already submitted by this wallet"}));
+                    submission_success = true;
+                    break;
+                }
+
                 // Determine if this is a recoverable 5xx error or a non-recoverable 4xx validation error.
                 // We check for 50x or 51x (to be safe) status codes, which indicate server-side failure.
                 let is_5xx_server_error = e.contains("(Status 50") || e.contains("(Status 51");
@@ -89,7 +98,7 @@ fn process_pending_solution(client: &Client, api_url: &str, file_path: &Path, da
                     backoff.sleep();
                     continue;
                 } else {
-                    // Treat 4xx errors (API Validation, Already Solved, Challenge Expired, etc.) as non-recoverable.
+                    // Treat other 4xx errors (API Validation, Challenge Expired, etc.) as non-recoverable.
                     eprintln!("❌ Non-recoverable API Submission Error. Deleting from queue. Details: {}", e);
                     non_recoverable_error = true;
                     break;
