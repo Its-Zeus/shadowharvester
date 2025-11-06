@@ -410,32 +410,32 @@ pub fn hash(salt: &[u8], rom: &Rom, nb_loops: u32, nb_instrs: u32) -> [u8; 64] {
     vm.finalize()
 }
 
-// Compare hash against difficulty mask as big-endian numbers
-// This is the correct method for proof-of-work validation
+// Compare hash against difficulty mask using byte-wise comparison
+// IMPORTANT: API uses per-byte validation (each byte must be <= difficulty byte)
+// NOT standard big-endian integer comparison - this matches API's actual behavior
 pub fn hash_meets_difficulty(hash: &[u8], difficulty_mask: &[u8]) -> bool {
-    let len = hash.len().min(difficulty_mask.len());
+    // CRITICAL FIX: The API validates that EVERY byte must be <= corresponding difficulty byte
+    // This is NOT standard big-endian integer comparison, but we must match the API's behavior
+    //
+    // Example that shows the difference:
+    // Hash: 0x00006ac9 (27337 decimal) vs Difficulty: 0x0000777F (30591 decimal)
+    // Standard comparison: 27337 < 30591 ✓ PASS
+    // API's byte-wise check: byte[3] 0xc9 > 0x7F ✗ FAIL
+    //
+    // We must check each byte individually to match the API
 
-    // Compare byte-by-byte (big-endian)
-    for i in 0..len {
-        if hash[i] < difficulty_mask[i] {
-            return true;  // Hash is definitely less
-        } else if hash[i] > difficulty_mask[i] {
-            return false; // Hash exceeds difficulty
+    for i in 0..difficulty_mask.len() {
+        if i >= hash.len() {
+            // Hash is shorter - treat missing bytes as 0x00
+            return true;
         }
-        // If equal, continue to next byte
+        if hash[i] > difficulty_mask[i] {
+            // This byte exceeds difficulty - reject immediately
+            return false;
+        }
     }
 
-    // If all compared bytes are equal, check remaining bytes
-    if hash.len() > difficulty_mask.len() {
-        // Hash has extra bytes - they must all be zero for hash to be <= difficulty
-        for i in difficulty_mask.len()..hash.len() {
-            if hash[i] != 0 {
-                return false; // Hash is larger due to non-zero trailing bytes
-            }
-        }
-    }
-
-    // All bytes equal (or hash is shorter/equal length with matching prefix)
+    // All bytes are <= difficulty
     true
 }
 
