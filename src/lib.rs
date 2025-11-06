@@ -410,15 +410,16 @@ pub fn hash(salt: &[u8], rom: &Rom, nb_loops: u32, nb_instrs: u32) -> [u8; 64] {
     vm.finalize()
 }
 
-// Compare hash against difficulty using NUMERIC COMPARISON method
-// The API compares the first 4 bytes of hash as a 32-bit big-endian integer
-// against the difficulty value: hash_value <= difficulty_value
+// Compare hash against difficulty using MASK-BASED validation
+// The API treats difficulty as a bit mask: hash can only have 1-bits where difficulty has 1-bits
+// Rule: (hash & ~difficulty) must equal 0
+// i.e., wherever difficulty has a 0-bit, hash MUST also have a 0-bit
 pub fn hash_meets_difficulty(hash: &[u8], difficulty_bytes: &[u8]) -> bool {
     if hash.len() < 4 || difficulty_bytes.len() < 4 {
         return false;
     }
 
-    // Extract first 4 bytes and compare as big-endian u32
+    // Extract first 4 bytes
     let hash_value = u32::from_be_bytes([hash[0], hash[1], hash[2], hash[3]]);
     let difficulty_value = u32::from_be_bytes([
         difficulty_bytes[0],
@@ -427,7 +428,9 @@ pub fn hash_meets_difficulty(hash: &[u8], difficulty_bytes: &[u8]) -> bool {
         difficulty_bytes[3],
     ]);
 
-    hash_value <= difficulty_value
+    // Mask validation: hash can only have bits set where difficulty allows them
+    // (hash & ~difficulty) == 0
+    (hash_value & !difficulty_value) == 0
 }
 
 // Legacy function - kept for reference but should not be used
@@ -547,7 +550,7 @@ fn spin(params: ChallengeParams, sender: Sender<Result>, stop_signal: Arc<Atomic
         let preimage_bytes = preimage_string.as_bytes();
         let h = hash(preimage_bytes, &params.rom, NB_LOOPS, NB_INSTRS);
 
-        // Use numeric comparison (matches API validation exactly)
+        // Use mask-based validation (matches API validation exactly)
         if hash_meets_difficulty(&h, &params.difficulty_bytes) {
             // Extract first 4 bytes for display
             let hash_value = u32::from_be_bytes([h[0], h[1], h[2], h[3]]);
@@ -571,14 +574,14 @@ fn spin(params: ChallengeParams, sender: Sender<Result>, stop_signal: Arc<Atomic
             eprintln!("{}", preimage_string);
             eprintln!("\n--- HASH OUTPUT (64 bytes) ---");
             eprintln!("{}", hex::encode(&h));
-            eprintln!("\n--- DIFFICULTY VALIDATION (Numeric Comparison) ---");
-            eprintln!("Hash prefix (hex): {:08x}", hash_value);
-            eprintln!("Hash value (dec): {}", hash_value);
+            eprintln!("\n--- DIFFICULTY VALIDATION (Mask-Based) ---");
+            eprintln!("Hash (hex):       {:08x}", hash_value);
             eprintln!("Difficulty (hex): {:08x}", difficulty_value);
-            eprintln!("Difficulty (dec): {}", difficulty_value);
-            eprintln!("Hash <= Difficulty: {} ({})",
-                hash_value <= difficulty_value,
-                if hash_value <= difficulty_value { "PASS" } else { "FAIL" });
+            eprintln!("~Difficulty:      {:08x}", !difficulty_value);
+            eprintln!("hash & ~diff:     {:08x}", hash_value & !difficulty_value);
+            eprintln!("Mask check: {} ({})",
+                (hash_value & !difficulty_value) == 0,
+                if (hash_value & !difficulty_value) == 0 { "PASS" } else { "FAIL" });
             eprintln!("=================================================\n");
 
             if sender.send(Result::Found(nonce_value)).is_ok() {
