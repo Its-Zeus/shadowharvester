@@ -9,7 +9,7 @@ use std::time::Duration;
 use std::{fs, thread};
 
 // CONSTANTS for the submitter loop
-const SUBMISSION_INTERVAL_SECS: u64 = 5;
+const SUBMISSION_INTERVAL_SECS: u64 = 1;  // Fast submission (was 5s)
 const QUEUE_BASE_DIR: &str = "pending_submissions";
 
 pub fn run_submitter_thread(client: Client, api_url: String, data_dir_base: String) -> Result<(), String> {
