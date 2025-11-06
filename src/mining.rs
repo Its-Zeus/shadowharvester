@@ -815,6 +815,22 @@ pub fn run_wallet_pool_mining(context: MiningContext, wallets_file: &str, concur
 
         println!("\n✅ All wallets processed for this challenge!");
 
+        // Wait a moment for background submitter to process any pending solutions
+        println!("⏳ Waiting for background submissions to complete...");
+        thread::sleep(Duration::from_secs(5));
+
+        // Refresh all wallet stats one final time to get accurate counts
+        println!("🔄 Refreshing final statistics from API...");
+        {
+            let mut stats = live_stats.lock().unwrap();
+            for wallet_stat in stats.wallets.iter_mut() {
+                if let Ok(fresh) = api::fetch_statistics(&context.client, &context.api_url, &wallet_stat.address) {
+                    wallet_stat.solved_count = fresh.crypto_receipts;
+                    wallet_stat.estimated_night = fresh.night_allocation as f64 / 1_000_000.0;
+                }
+            }
+        }
+
         // Stop display thread
         display_running.store(false, Ordering::SeqCst);
         let _ = display_handle.join();
