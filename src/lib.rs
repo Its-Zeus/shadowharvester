@@ -489,6 +489,7 @@ pub enum Result {
 }
 
 // Helper to build the preimage string as specified in the API documentation
+// Order: nonce + address + challenge_id + difficulty + no_pre_mine + no_pre_mine_hour + latest_submission
 pub fn build_preimage(
     nonce: u64,
     address: &str,
@@ -505,8 +506,8 @@ pub fn build_preimage(
     preimage.push_str(challenge_id);
     preimage.push_str(difficulty);
     preimage.push_str(no_pre_mine);
-    preimage.push_str(latest_submission);
-    preimage.push_str(no_pre_mine_hour);
+    preimage.push_str(no_pre_mine_hour);  // FIX: no_pre_mine_hour comes BEFORE latest_submission
+    preimage.push_str(latest_submission);  // FIX: latest_submission comes AFTER no_pre_mine_hour
     preimage
 }
 
