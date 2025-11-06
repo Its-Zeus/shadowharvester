@@ -462,11 +462,12 @@ pub struct Thread {}
 pub struct ChallengeParams {
     pub rom_key: String, // no_pre_mine hex string (used for ROM init)
     pub difficulty_mask: String, // difficulty hex string (used for submission check)
+    pub difficulty_bytes: Vec<u8>, // Decoded difficulty mask for numeric comparison
     pub address: String, // Registered Cardano address
     pub challenge_id: String,
     pub latest_submission: String,
     pub no_pre_mine_hour: String,
-    pub required_zero_bits: usize, // Derived from difficulty_mask
+    pub required_zero_bits: usize, // Derived from difficulty_mask (legacy, for reference)
     pub rom: Arc<Rom>,
 }
 
@@ -535,7 +536,8 @@ fn spin(params: ChallengeParams, sender: Sender<Result>, stop_signal: Arc<Atomic
         let preimage_bytes = preimage_string.as_bytes();
         let h = hash(preimage_bytes, &params.rom, NB_LOOPS, NB_INSTRS);
 
-        if hash_structure_good(&h, params.required_zero_bits) {
+        // Use numeric comparison (hash <= difficulty_mask) instead of zero-bit counting
+        if hash_meets_difficulty(&h, &params.difficulty_bytes) {
             if sender.send(Result::Found(nonce_value)).is_ok() {
                 // Sent the found nonce
             }
@@ -565,6 +567,7 @@ pub fn scavenge(
     const GB: usize = 1024 * MB;
 
     let required_zero_bits = difficulty_to_zero_bits(&difficulty);
+    let difficulty_bytes = hex::decode(&difficulty).expect("Invalid difficulty hex");
 
     // We rely on the caller to print required_zero_bits
 
@@ -590,6 +593,7 @@ pub fn scavenge(
         let common_params = ChallengeParams {
             rom_key: no_pre_mine_key.clone(),
             difficulty_mask: difficulty.clone(),
+            difficulty_bytes: difficulty_bytes.clone(),
             address: my_registered_address.clone(),
             challenge_id: challenge_id.clone(),
             latest_submission: latest_submission.clone(),
