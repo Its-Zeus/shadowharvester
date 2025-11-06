@@ -549,12 +549,24 @@ fn spin(params: ChallengeParams, sender: Sender<Result>, stop_signal: Arc<Atomic
 
         // Use numeric comparison (hash <= difficulty_mask) instead of zero-bit counting
         if hash_meets_difficulty(&h, &params.difficulty_bytes) {
-            // DEBUG: Log details of found solution
-            eprintln!("\n[DEBUG] Solution candidate found:");
-            eprintln!("  Nonce: {:016x}", nonce_value);
-            eprintln!("  Hash (first 16 bytes): {}", hex::encode(&h[..16]));
-            eprintln!("  Difficulty mask: {}", hex::encode(&params.difficulty_bytes));
-            eprintln!("  Meets difficulty: true");
+            // DEBUG: Log COMPLETE preimage details
+            eprintln!("\n========== SOLUTION FOUND (FULL DEBUG) ==========");
+            eprintln!("Nonce (hex): {:016x}", nonce_value);
+            eprintln!("Address: {}", my_address);
+            eprintln!("Challenge ID: {}", params.challenge_id);
+            eprintln!("Difficulty: {}", params.difficulty_mask);
+            eprintln!("ROM Key: {}", params.rom_key);
+            eprintln!("Latest Submission: {}", params.latest_submission);
+            eprintln!("No Pre-Mine Hour: {}", params.no_pre_mine_hour);
+            eprintln!("\n--- PREIMAGE STRING (length: {}) ---", preimage_string.len());
+            eprintln!("{}", preimage_string);
+            eprintln!("\n--- HASH OUTPUT (64 bytes) ---");
+            eprintln!("{}", hex::encode(&h));
+            eprintln!("\n--- DIFFICULTY COMPARISON ---");
+            eprintln!("Difficulty bytes: {}", hex::encode(&params.difficulty_bytes));
+            eprintln!("Hash first 4 bytes: {}", hex::encode(&h[..4]));
+            eprintln!("Meets difficulty: true");
+            eprintln!("=================================================\n");
 
             if sender.send(Result::Found(nonce_value)).is_ok() {
                 // Sent the found nonce
