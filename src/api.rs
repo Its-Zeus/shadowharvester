@@ -152,10 +152,14 @@ fn donate_to_internal(
         donation_signature
     );
 
+    // Debug: Print first 100 chars of URL to diagnose issues
+    eprintln!("[DEBUG] Donation URL (first 150 chars): {}...", &url.chars().take(150).collect::<String>());
+    eprintln!("[DEBUG] Signature length: {} chars", donation_signature.len());
+
     let response = client
         .post(&url)
+        .body("{}")
         .header("Content-Type", "application/json; charset=utf-8")
-        .json(&serde_json::json!({}))
         .send().map_err(|e| format!("Network/Client Error: {}", e))?;
 
     let status = response.status();
@@ -173,7 +177,14 @@ fn donate_to_internal(
                 Err(format!("Donation Failed: {}", format_detailed_api_error(err, status)))
             }
             Err(_) => {
-                Err(format!("HTTP Error {} with unparseable body: {}", status.as_u16(), body_text))
+                // HTML 403 often means wallet not registered or WAF blocking
+                if status.as_u16() == 403 && body_text.contains("<html>") {
+                    Err(format!("HTTP 403: Wallet may not be registered. Register wallets first by mining at least once, or check if address {} is registered", original_address))
+                } else if status.as_u16() == 404 {
+                    Err(format!("HTTP 404: Wallet {} is not registered. Register by mining first.", original_address))
+                } else {
+                    Err(format!("HTTP Error {} with unparseable body: {}", status.as_u16(), body_text))
+                }
             }
         }
     }
