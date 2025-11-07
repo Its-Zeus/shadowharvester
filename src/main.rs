@@ -22,31 +22,61 @@ use api::get_active_challenge_data;
 use data_types::WalletConfig;
 use std::fs;
 
-/// Generate N wallets with random mnemonics and save to JSON file
+/// Generate N wallets with random mnemonics and append to JSON file
 fn generate_wallets_file(count: usize, output_file: &str) -> Result<(), String> {
     if count == 0 {
         return Err("Cannot generate 0 wallets".to_string());
     }
 
     if count > 1000 {
-        return Err("Maximum 1000 wallets allowed per file".to_string());
+        return Err("Maximum 1000 wallets allowed per generation".to_string());
     }
 
-    println!("🔑 Generating {} new wallet(s)...", count);
+    // Try to load existing wallets
+    let mut existing_wallets: Vec<WalletConfig> = if std::path::Path::new(output_file).exists() {
+        println!("📂 Loading existing wallets from '{}'...", output_file);
+        let existing_json = fs::read_to_string(output_file)
+            .map_err(|e| format!("Failed to read existing wallets file '{}': {}", output_file, e))?;
 
-    let mut wallets = Vec::new();
-    for i in 1..=count {
+        match serde_json::from_str(&existing_json) {
+            Ok(wallets) => {
+                let wallet_vec: Vec<WalletConfig> = wallets;
+                println!("   Found {} existing wallet(s)", wallet_vec.len());
+                wallet_vec
+            },
+            Err(e) => {
+                println!("   ⚠️  Could not parse existing file ({}). Creating backup and starting fresh.", e);
+                // Backup the corrupted file
+                let backup_file = format!("{}.backup.{}", output_file, chrono::Utc::now().timestamp());
+                let _ = fs::copy(output_file, &backup_file);
+                println!("   Backed up to: {}", backup_file);
+                Vec::new()
+            }
+        }
+    } else {
+        println!("📂 No existing wallets file found. Creating new '{}'...", output_file);
+        Vec::new()
+    };
+
+    // Find the highest ID to continue numbering
+    let start_id = existing_wallets.iter().map(|w| w.id).max().unwrap_or(0) + 1;
+    let existing_count = existing_wallets.len();
+
+    println!("🔑 Generating {} new wallet(s) (starting from ID {})...", count, start_id);
+
+    for i in 0..count {
+        let wallet_id = start_id + i as u32;
         let mnemonic = cardano::generate_mnemonic();
 
         // Derive address for display purposes
         let key_pair = cardano::derive_key_pair_from_mnemonic(&mnemonic, 0, 0);
         let address = key_pair.2.to_bech32().unwrap();
 
-        println!("   Wallet {} - {}", i, address);
+        println!("   Wallet {} - {}", wallet_id, address);
 
         let wallet = WalletConfig {
-            id: i as u32,
-            name: format!("Wallet {}", i),
+            id: wallet_id,
+            name: format!("Wallet {}", wallet_id),
             mnemonic,
             password: None,
             profile_dir: None,
@@ -57,16 +87,17 @@ fn generate_wallets_file(count: usize, output_file: &str) -> Result<(), String> 
             estimated_tokens: Some("0.0".to_string()),
             last_updated: Some(chrono::Utc::now().to_rfc3339()),
         };
-        wallets.push(wallet);
+        existing_wallets.push(wallet);
     }
 
-    let json = serde_json::to_string_pretty(&wallets)
+    let json = serde_json::to_string_pretty(&existing_wallets)
         .map_err(|e| format!("Failed to serialize wallets: {}", e))?;
 
     fs::write(output_file, json)
         .map_err(|e| format!("Failed to write wallets file '{}': {}", output_file, e))?;
 
-    println!("\n✅ Successfully generated {} wallet(s) and saved to '{}'", count, output_file);
+    println!("\n✅ Successfully generated {} new wallet(s) and appended to '{}'", count, output_file);
+    println!("   Total wallets in file: {} (was: {}, added: {})", existing_wallets.len(), existing_count, count);
     println!("\n⚠️  IMPORTANT: Back up this file securely! It contains your wallet mnemonics.");
     println!("   You can now start mining with: --wallets-file {}", output_file);
 
