@@ -195,6 +195,7 @@ pub fn run_single_mining_cycle(
     donate_to_option: Option<&String>,
     challenge_params: &ChallengeData,
     data_dir_base: Option<&str>,
+    stop_signal: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>, // NEW: Optional stop signal
 ) -> (MiningResult, u64, f64) {
     let (found_nonce, total_hashes, elapsed_secs) = shadow_harvester_lib::scavenge(
         mining_address.clone(),
@@ -204,6 +205,7 @@ pub fn run_single_mining_cycle(
         challenge_params.latest_submission.clone(),
         challenge_params.no_pre_mine_hour_str.clone(),
         threads,
+        stop_signal, // Pass stop signal to scavenge
     );
 
     let mining_result = match found_nonce {

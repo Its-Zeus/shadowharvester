@@ -216,7 +216,7 @@ pub fn run_persistent_key_mining(context: MiningContext, skey_hex: &String) -> R
         loop {
             // UPDATED CALL: Removed client and api_url
             let (result, total_hashes, elapsed_secs) = run_single_mining_cycle(
-                mining_address.clone(), context.threads, context.donate_to_option, &challenge_params, context.data_dir,
+                mining_address.clone(), context.threads, context.donate_to_option, &challenge_params, context.data_dir, None,
             );
             final_hashes = total_hashes; final_elapsed = elapsed_secs;
 
@@ -403,7 +403,7 @@ pub fn run_mnemonic_sequential_mining(cli: &Cli, context: MiningContext, mnemoni
 
         // UPDATED CALL: Removed client and api_url
         let (result, total_hashes, elapsed_secs) = run_single_mining_cycle(
-            mining_address.clone(), context.threads, context.donate_to_option, &challenge_params, context.data_dir,
+            mining_address.clone(), context.threads, context.donate_to_option, &challenge_params, context.data_dir, None,
         );
 
         // --- 4. Post-Mining Index Advancement ---
@@ -493,7 +493,7 @@ pub fn run_ephemeral_key_mining(context: MiningContext) -> Result<(), String> {
 
         // UPDATED CALL: Removed client and api_url
         let (result, total_hashes, elapsed_secs) = run_single_mining_cycle(
-                generated_mining_address.to_string(), context.threads, context.donate_to_option, &challenge_params, context.data_dir,
+                generated_mining_address.to_string(), context.threads, context.donate_to_option, &challenge_params, context.data_dir, None,
             );
         final_hashes = total_hashes; final_elapsed = elapsed_secs;
 
@@ -723,9 +723,10 @@ pub fn run_wallet_pool_mining(context: MiningContext, wallets_file: &str, concur
         let mut wallet_index = 0;
         let mut active_miners = 0;
 
-        // Store thread handles to ensure proper cleanup
+        // Store thread handles and stop signals to ensure proper cleanup
         use std::collections::HashMap;
         let mut thread_handles: HashMap<String, thread::JoinHandle<()>> = HashMap::new();
+        let mut stop_signals: HashMap<String, Arc<AtomicBool>> = HashMap::new();
 
         // Start initial batch of concurrent wallets
         let initial_batch = concurrent_wallets.min(wallets.len());
@@ -739,6 +740,10 @@ pub fn run_wallet_pool_mining(context: MiningContext, wallets_file: &str, concur
                     w.status = WalletStatus::Mining;
                 }
             }
+
+            // Create stop signal for this wallet
+            let stop_signal = Arc::new(AtomicBool::new(false));
+            stop_signals.insert(wallet.name.clone(), Arc::clone(&stop_signal));
 
             let wallet_clone = wallet.clone();
             let context_clone = context.to_owned();
@@ -754,6 +759,7 @@ pub fn run_wallet_pool_mining(context: MiningContext, wallets_file: &str, concur
                     challenge_params_clone,
                     reg_message_clone,
                     stats_clone.clone(),
+                    stop_signal, // Pass stop signal
                 );
                 let _ = tx.send((wallet_clone.name.clone(), result));
             });
@@ -788,6 +794,8 @@ pub fn run_wallet_pool_mining(context: MiningContext, wallets_file: &str, concur
                 if let Some(handle) = thread_handles.remove(&wallet_name) {
                     let _ = handle.join(); // Wait for thread to fully exit and clean up
                 }
+                // Clean up stop signal for completed thread
+                stop_signals.remove(&wallet_name);
 
                 // Get wallet address if we need fresh stats
                 let wallet_address = if result == MiningResult::FoundAndQueued {
@@ -836,6 +844,10 @@ pub fn run_wallet_pool_mining(context: MiningContext, wallets_file: &str, concur
                         }
                     }
 
+                    // Create stop signal for this wallet
+                    let stop_signal = Arc::new(AtomicBool::new(false));
+                    stop_signals.insert(next_wallet.name.clone(), Arc::clone(&stop_signal));
+
                     let wallet_clone = next_wallet.clone();
                     let context_clone = context.to_owned();
                     let challenge_params_clone = challenge_params.clone();
@@ -850,6 +862,7 @@ pub fn run_wallet_pool_mining(context: MiningContext, wallets_file: &str, concur
                             challenge_params_clone,
                             reg_message_clone,
                             stats_clone.clone(),
+                            stop_signal, // Pass stop signal
                         );
                         let _ = tx.send((wallet_clone.name.clone(), result));
                     });
@@ -883,9 +896,15 @@ pub fn run_wallet_pool_mining(context: MiningContext, wallets_file: &str, concur
         if new_challenge_detected {
             println!("\n⚡ New challenge detected! Cleaning up before switching...");
 
+            // CRITICAL: Signal all active mining threads to stop immediately
+            println!("   Stopping {} active mining threads...", stop_signals.len());
+            for (_name, stop_signal) in stop_signals.iter() {
+                stop_signal.store(true, Ordering::SeqCst);
+            }
+
             // CRITICAL: Wait for all active mining threads to complete
-            // This ensures all Arc<Rom> references are dropped before creating new ROM
-            println!("   Waiting for {} active miners to complete...", active_miners);
+            // They should abort quickly now that stop signal is set
+            println!("   Waiting for {} active miners to abort and exit...", active_miners);
             let mut remaining = active_miners;
             while remaining > 0 {
                 if let Ok((wallet_name, _result)) = result_rx.recv_timeout(Duration::from_secs(5)) {
@@ -901,17 +920,13 @@ pub fn run_wallet_pool_mining(context: MiningContext, wallets_file: &str, concur
                 }
             }
 
-            // For remaining threads that timed out, we must make a choice:
-            // Option A: Join them (blocks until mining completes - could take minutes)
-            // Option B: Detach them (memory leak as ROM stays in memory)
-            // We choose Option A with a warning, as memory leaks are worse than delays
+            // Join any remaining threads (should complete quickly since stop signal was set)
             if !thread_handles.is_empty() {
-                eprintln!("   ⚠️  {} threads still mining - waiting for them to complete...", thread_handles.len());
-                eprintln!("   This may take a few minutes. ROM must be released before starting new challenge.");
+                println!("   Joining {} remaining threads...", thread_handles.len());
                 for (_name, handle) in thread_handles.drain() {
-                    let _ = handle.join(); // Must wait to prevent memory leak
+                    let _ = handle.join();
                 }
-                println!("   All threads completed.");
+                println!("   All threads stopped.");
             }
 
             // Stop display thread
@@ -1040,6 +1055,7 @@ fn mine_single_wallet_quiet(
     challenge_params: ChallengeData,
     reg_message: String,
     _live_stats: Arc<Mutex<LiveStats>>,
+    stop_signal: Arc<AtomicBool>, // NEW: Stop signal to abort mining when new challenge detected
 ) -> MiningResult {
     let mnemonic = wallet.mnemonic.clone();
     let key_pair = cardano::derive_key_pair_from_mnemonic(&mnemonic, 0, 0);
@@ -1099,6 +1115,7 @@ fn mine_single_wallet_quiet(
         context.donate_to_option.as_ref(),
         &challenge_params,
         context.data_dir.as_deref(),
+        Some(stop_signal), // Pass stop signal to allow early abort
     );
 
     // Handle donation (silent)
@@ -1190,6 +1207,7 @@ fn mine_single_wallet(
         context.donate_to_option.as_ref(),
         &challenge_params,
         context.data_dir.as_deref(),
+        None, // No stop signal for sequential mining
     );
 
     match result {

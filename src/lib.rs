@@ -608,6 +608,7 @@ pub fn scavenge(
     latest_submission: String,
     no_pre_mine_hour: String,
     nb_threads: u32,
+    external_stop_signal: Option<Arc<AtomicBool>>, // NEW: Optional external stop signal
 ) -> (Option<String>, u64, f64) { // <-- FIX: Explicitly define the return type
     const MB: usize = 1024 * 1024;
     const GB: usize = 1024 * MB;
@@ -634,7 +635,8 @@ pub fn scavenge(
         println!("{}", rom.digest);
 
         let (sender, receiver) = channel();
-        let stop_signal = Arc::new(AtomicBool::new(false));
+        // Use external stop signal if provided, otherwise create new one
+        let stop_signal = external_stop_signal.unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
 
         let common_params = ChallengeParams {
             rom_key: no_pre_mine_key.clone(),
