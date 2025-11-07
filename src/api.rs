@@ -143,18 +143,19 @@ fn donate_to_internal(
     donation_signature: &str,
 ) -> Result<String, String> {
 
-    let url = format!(
-        "{}/donate_to/{}/{}/{}",
-        api_url,
-        destination_address,
-        original_address,
-        donation_signature
-    );
+    let url = format!("{}/donate_to", api_url);
+
+    // Build the JSON body with donation parameters
+    let body = serde_json::json!({
+        "original_address": original_address,
+        "destination_address": destination_address,
+        "signature": donation_signature
+    });
 
     let response = client
         .post(&url)
         .header("Content-Type", "application/json; charset=utf-8")
-        .json(&serde_json::json!({}))
+        .json(&body)
         .send().map_err(|e| format!("Network/Client Error: {}", e))?;
 
     let status = response.status();
