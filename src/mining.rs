@@ -723,6 +723,10 @@ pub fn run_wallet_pool_mining(context: MiningContext, wallets_file: &str, concur
         let mut wallet_index = 0;
         let mut active_miners = 0;
 
+        // Store thread handles to ensure proper cleanup
+        use std::collections::HashMap;
+        let mut thread_handles: HashMap<String, thread::JoinHandle<()>> = HashMap::new();
+
         // Start initial batch of concurrent wallets
         let initial_batch = concurrent_wallets.min(wallets.len());
         for i in 0..initial_batch {
@@ -743,7 +747,7 @@ pub fn run_wallet_pool_mining(context: MiningContext, wallets_file: &str, concur
             let stats_clone = Arc::clone(&live_stats);
             let tx = result_tx.clone();
 
-            thread::spawn(move || {
+            let handle = thread::spawn(move || {
                 let result = mine_single_wallet_quiet(
                     wallet_clone.clone(),
                     context_clone,
@@ -753,6 +757,9 @@ pub fn run_wallet_pool_mining(context: MiningContext, wallets_file: &str, concur
                 );
                 let _ = tx.send((wallet_clone.name.clone(), result));
             });
+
+            // CRITICAL: Store thread handle for proper cleanup
+            thread_handles.insert(wallet.name.clone(), handle);
 
             wallet_index += 1;
             active_miners += 1;
@@ -776,6 +783,11 @@ pub fn run_wallet_pool_mining(context: MiningContext, wallets_file: &str, concur
                 Ok((wallet_name, result)) => {
                 active_miners -= 1;
                 total_completed += 1;
+
+                // CRITICAL: Join the completed thread to ensure ROM is fully released
+                if let Some(handle) = thread_handles.remove(&wallet_name) {
+                    let _ = handle.join(); // Wait for thread to fully exit and clean up
+                }
 
                 // Get wallet address if we need fresh stats
                 let wallet_address = if result == MiningResult::FoundAndQueued {
@@ -831,7 +843,7 @@ pub fn run_wallet_pool_mining(context: MiningContext, wallets_file: &str, concur
                     let stats_clone = Arc::clone(&live_stats);
                     let tx = result_tx.clone();
 
-                    thread::spawn(move || {
+                    let handle = thread::spawn(move || {
                         let result = mine_single_wallet_quiet(
                             wallet_clone.clone(),
                             context_clone,
@@ -841,6 +853,9 @@ pub fn run_wallet_pool_mining(context: MiningContext, wallets_file: &str, concur
                         );
                         let _ = tx.send((wallet_clone.name.clone(), result));
                     });
+
+                    // CRITICAL: Store new thread handle
+                    thread_handles.insert(next_wallet.name.clone(), handle);
 
                     wallet_index += 1;
                     active_miners += 1;
@@ -873,13 +888,23 @@ pub fn run_wallet_pool_mining(context: MiningContext, wallets_file: &str, concur
             println!("   Waiting for {} active miners to complete...", active_miners);
             let mut remaining = active_miners;
             while remaining > 0 {
-                if let Ok((_wallet_name, _result)) = result_rx.recv_timeout(Duration::from_secs(5)) {
+                if let Ok((wallet_name, _result)) = result_rx.recv_timeout(Duration::from_secs(5)) {
+                    // CRITICAL: Join thread to ensure full cleanup
+                    if let Some(handle) = thread_handles.remove(&wallet_name) {
+                        let _ = handle.join();
+                    }
                     remaining -= 1;
                     println!("   {} miners remaining...", remaining);
                 } else {
                     println!("   Timeout waiting for miners - continuing anyway");
                     break;
                 }
+            }
+
+            // CRITICAL: Join any remaining threads that didn't send results
+            println!("   Joining {} remaining thread handles...", thread_handles.len());
+            for (_name, handle) in thread_handles.drain() {
+                let _ = handle.join();
             }
 
             // Stop display thread
@@ -940,6 +965,12 @@ pub fn run_wallet_pool_mining(context: MiningContext, wallets_file: &str, concur
             println!("║  Solved:   {}  |  Skipped: {}  |  Failed: {}              ║", solved, skipped, failed);
             println!("║  Total Time: {}m {}s                                      ║", total_time / 60, total_time % 60);
             println!("╚══════════════════════════════════════════════════════════╝");
+        }
+
+        // CRITICAL: Join any remaining thread handles to ensure all ROMs are released
+        println!("🧹 Joining {} remaining mining threads...", thread_handles.len());
+        for (_name, handle) in thread_handles.drain() {
+            let _ = handle.join();
         }
 
         // CRITICAL: Explicitly drop large objects to free memory before next challenge
