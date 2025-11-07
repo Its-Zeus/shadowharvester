@@ -159,6 +159,7 @@ fn donate_to_internal(
     let response = client
         .post(&url)
         .header("Content-Type", "application/json; charset=utf-8")
+        .body("{}")  // curl uses -d "{}" so we need empty JSON body
         .send().map_err(|e| format!("Network/Client Error: {}", e))?;
 
     let status = response.status();
