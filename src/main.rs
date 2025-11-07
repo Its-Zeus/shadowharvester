@@ -104,11 +104,126 @@ fn generate_wallets_file(count: usize, output_file: &str) -> Result<(), String> 
     Ok(())
 }
 
+/// Setup donations for all wallets in wallets.json to a destination address (one-time operation)
+fn setup_donate_all_wallets(wallets_file: &str, destination_address: &str, api_url: &str) -> Result<(), String> {
+    println!("💸 Setting up donation consolidation for all wallets...");
+    println!("   Source: {}", wallets_file);
+    println!("   Destination: {}", destination_address);
+    println!();
+
+    // Load wallets from file
+    if !std::path::Path::new(wallets_file).exists() {
+        return Err(format!("Wallets file '{}' not found", wallets_file));
+    }
+
+    let wallets_json = fs::read_to_string(wallets_file)
+        .map_err(|e| format!("Failed to read wallets file '{}': {}", wallets_file, e))?;
+
+    let wallets: Vec<WalletConfig> = serde_json::from_str(&wallets_json)
+        .map_err(|e| format!("Failed to parse wallets JSON: {}", e))?;
+
+    if wallets.is_empty() {
+        return Err("No wallets found in file".to_string());
+    }
+
+    println!("📂 Loaded {} wallet(s) from file", wallets.len());
+    println!();
+
+    // Create HTTP client
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
+
+    // Track results
+    let mut success_count = 0;
+    let mut already_donated_count = 0;
+    let mut failed_count = 0;
+    let mut failed_wallets: Vec<(String, String)> = Vec::new();
+
+    // Process each wallet
+    for (idx, wallet) in wallets.iter().enumerate() {
+        let wallet_num = idx + 1;
+
+        // Derive keypair from mnemonic (using account 0, index 0)
+        let key_pair = cardano::derive_key_pair_from_mnemonic(&wallet.mnemonic, 0, 0);
+        let source_address = key_pair.2.to_bech32().unwrap();
+
+        print!("[{}/{}] {} ... ", wallet_num, wallets.len(), source_address);
+        std::io::Write::flush(&mut std::io::stdout()).unwrap();
+
+        // Create donation message
+        let donation_message = format!("Assign accumulated Scavenger rights to: {}", destination_address);
+
+        // Sign the message using CIP-8
+        let (donation_signature, _pubkey) = cardano::cip8_sign(&key_pair, &donation_message);
+
+        // Call the donation API
+        match api::donate_to(&client, api_url, &source_address, destination_address, &donation_signature) {
+            Ok(_donation_id) => {
+                println!("✅ Success");
+                success_count += 1;
+            }
+            Err(e) => {
+                // Check if it's a 409 conflict (already donated)
+                if e.contains("409") || e.contains("Conflict") || e.contains("already") {
+                    println!("⏭️  Already donated");
+                    already_donated_count += 1;
+                } else {
+                    println!("❌ Failed: {}", e);
+                    failed_count += 1;
+                    failed_wallets.push((source_address.clone(), e));
+                }
+            }
+        }
+    }
+
+    println!();
+    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    println!("📊 DONATION SETUP SUMMARY");
+    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    println!("   Total wallets:       {}", wallets.len());
+    println!("   ✅ Newly donated:     {}", success_count);
+    println!("   ⏭️  Already donated:   {}", already_donated_count);
+    println!("   ❌ Failed:            {}", failed_count);
+    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+
+    if !failed_wallets.is_empty() {
+        println!();
+        println!("Failed wallets:");
+        for (addr, err) in failed_wallets.iter() {
+            println!("   {} - {}", addr, err);
+        }
+    }
+
+    println!();
+    if failed_count == 0 {
+        println!("🎉 All wallets successfully configured to donate to: {}", destination_address);
+        println!("   All future mining rewards from these wallets will be consolidated to the destination address.");
+    } else {
+        println!("⚠️  Some wallets failed to set up donations. Please review the errors above.");
+    }
+
+    Ok(())
+}
+
 /// Runs the main application logic based on CLI flags.
 fn run_app(cli: Cli) -> Result<(), String> {
     // Handle wallet generation mode (no API needed)
     if let Some(count) = cli.generate_wallets {
         return generate_wallets_file(count, cli.wallets_file.as_deref().unwrap_or("wallets.json"));
+    }
+
+    // Handle one-time donation setup (requires API URL)
+    if let Some(destination_address) = &cli.donate_all_to {
+        // Get API URL
+        let api_url = cli.api_url.as_ref()
+            .ok_or_else(|| "Error: --api-url is required when using --donate-all-to".to_string())?;
+
+        // Get wallets file path
+        let wallets_file = cli.wallets_file.as_deref().unwrap_or("wallets.json");
+
+        return setup_donate_all_wallets(wallets_file, destination_address, api_url);
     }
 
     let context = match setup_app(&cli) {

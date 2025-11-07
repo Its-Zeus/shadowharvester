@@ -67,6 +67,10 @@ pub struct Cli {
     /// Generate N new wallets and save to wallets.json (creates mnemonics automatically)
     #[arg(long)]
     pub generate_wallets: Option<usize>,
+
+    /// One-time setup: Donate all wallets in wallets.json to the specified address
+    #[arg(long)]
+    pub donate_all_to: Option<String>,
 }
 
 
