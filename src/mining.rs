@@ -866,10 +866,36 @@ pub fn run_wallet_pool_mining(context: MiningContext, wallets_file: &str, concur
         let _ = monitor_handle.join();
 
         if new_challenge_detected {
-            println!("\n⚡ Switching to new challenge immediately!");
+            println!("\n⚡ New challenge detected! Cleaning up before switching...");
+
+            // CRITICAL: Wait for all active mining threads to complete
+            // This ensures all Arc<Rom> references are dropped before creating new ROM
+            println!("   Waiting for {} active miners to complete...", active_miners);
+            let mut remaining = active_miners;
+            while remaining > 0 {
+                if let Ok((_wallet_name, _result)) = result_rx.recv_timeout(Duration::from_secs(5)) {
+                    remaining -= 1;
+                    println!("   {} miners remaining...", remaining);
+                } else {
+                    println!("   Timeout waiting for miners - continuing anyway");
+                    break;
+                }
+            }
+
             // Stop display thread
             display_running.store(false, Ordering::SeqCst);
             let _ = display_handle.join();
+
+            // CRITICAL: Explicitly drop large objects to free memory
+            // Drop live_stats (contains wallet data)
+            drop(live_stats);
+            // Drop challenge_params (contains 1GB Arc<Rom>)
+            drop(challenge_params);
+
+            println!("   Memory cleanup complete. Switching to new challenge...");
+
+            // Force garbage collection by sleeping briefly
+            thread::sleep(Duration::from_millis(100));
 
             // Immediately loop back to get the new challenge
             continue;
@@ -916,12 +942,21 @@ pub fn run_wallet_pool_mining(context: MiningContext, wallets_file: &str, concur
             println!("╚══════════════════════════════════════════════════════════╝");
         }
 
+        // CRITICAL: Explicitly drop large objects to free memory before next challenge
+        // This prevents memory accumulation across multiple challenges
+        drop(live_stats);
+        drop(challenge_params);
+        println!("🧹 Memory cleanup complete for challenge cycle.");
+
         // Wait for new challenge or exit based on mode
         if context.cli_challenge.is_some() {
             println!("\n✅ Fixed challenge mode - all wallets completed. Exiting.");
             break;
         } else {
             println!("\n⏳ Checking for next challenge...");
+            // Force a brief pause to allow memory to be reclaimed
+            thread::sleep(Duration::from_millis(500));
+
             // Poll for new challenge instead of sleeping for 5 minutes
             let mut attempts = 0;
             let max_attempts = 60; // Check for up to 30 minutes (60 * 30 seconds)
