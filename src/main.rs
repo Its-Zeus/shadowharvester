@@ -149,8 +149,18 @@ fn setup_donate_all_wallets(wallets_file: &str, destination_address: &str, api_u
         let key_pair = cardano::derive_key_pair_from_mnemonic(&wallet.mnemonic, 0, 0);
         let source_address = key_pair.2.to_bech32().unwrap();
 
-        print!("[{}/{}] {} ... ", wallet_num, wallets.len(), source_address);
-        std::io::Write::flush(&mut std::io::stdout()).unwrap();
+        // Truncate addresses for cleaner display
+        let source_short = if source_address.len() > 20 {
+            format!("{}...{}", &source_address[..10], &source_address[source_address.len()-8..])
+        } else {
+            source_address.clone()
+        };
+
+        let dest_short = if destination_address.len() > 20 {
+            format!("{}...{}", &destination_address[..10], &destination_address[destination_address.len()-8..])
+        } else {
+            destination_address.to_string()
+        };
 
         // Create donation message
         let donation_message = format!("Assign accumulated Scavenger rights to: {}", destination_address);
@@ -158,10 +168,13 @@ fn setup_donate_all_wallets(wallets_file: &str, destination_address: &str, api_u
         // Sign the message using CIP-8
         let (donation_signature, _pubkey) = cardano::cip8_sign(&key_pair, &donation_message);
 
-        // Call the donation API
-        match api::donate_to(&client, api_url, &source_address, destination_address, &donation_signature) {
-            Ok(_donation_id) => {
-                println!("✅ Success");
+        // Call the donation API (silent version for batch operations)
+        print!("[{:>3}/{:<3}] {} -> {} ", wallet_num, wallets.len(), source_short, dest_short);
+        std::io::Write::flush(&mut std::io::stdout()).unwrap();
+
+        match api::donate_to_silent(&client, api_url, &source_address, destination_address, &donation_signature) {
+            Ok(donation_id) => {
+                println!("✅ (ID: {})", donation_id);
                 success_count += 1;
             }
             Err(e) => {

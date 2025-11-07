@@ -133,8 +133,9 @@ pub fn submit_solution(
     }
 }
 
-/// Performs the POST /donate_to call.
-pub fn donate_to(
+/// Internal helper that performs the POST /donate_to call without printing output.
+/// Used by batch operations that need to control their own output formatting.
+fn donate_to_internal(
     client: &blocking::Client,
     api_url: &str,
     original_address: &str,
@@ -150,8 +151,6 @@ pub fn donate_to(
         donation_signature
     );
 
-    println!("-> Donating funds from {} to {}", original_address, destination_address);
-
     let response = client
         .post(&url)
         .header("Content-Type", "application/json; charset=utf-8")
@@ -162,7 +161,6 @@ pub fn donate_to(
 
     if status.is_success() {
         let donation_response: DonateResponse = response.json().map_err(|e| format!("Failed to parse successful donation JSON: {}", e))?;
-        println!("✅ Donation successful. Donation ID: {}", donation_response.donation_id);
         Ok(donation_response.donation_id)
     } else {
         let body_text = response.text().unwrap_or_else(|_| format!("Could not read response body for status {}", status));
@@ -178,6 +176,36 @@ pub fn donate_to(
             }
         }
     }
+}
+
+/// Performs the POST /donate_to call with verbose output (used for single mining operations).
+pub fn donate_to(
+    client: &blocking::Client,
+    api_url: &str,
+    original_address: &str,
+    destination_address: &str,
+    donation_signature: &str,
+) -> Result<String, String> {
+    println!("-> Donating funds from {} to {}", original_address, destination_address);
+
+    let result = donate_to_internal(client, api_url, original_address, destination_address, donation_signature);
+
+    if let Ok(ref donation_id) = result {
+        println!("✅ Donation successful. Donation ID: {}", donation_id);
+    }
+
+    result
+}
+
+/// Performs the POST /donate_to call silently (used for batch operations).
+pub fn donate_to_silent(
+    client: &blocking::Client,
+    api_url: &str,
+    original_address: &str,
+    destination_address: &str,
+    donation_signature: &str,
+) -> Result<String, String> {
+    donate_to_internal(client, api_url, original_address, destination_address, donation_signature)
 }
 
 /// Fetches the raw Challenge Response object from the API.
