@@ -901,10 +901,17 @@ pub fn run_wallet_pool_mining(context: MiningContext, wallets_file: &str, concur
                 }
             }
 
-            // CRITICAL: Join any remaining threads that didn't send results
-            println!("   Joining {} remaining thread handles...", thread_handles.len());
-            for (_name, handle) in thread_handles.drain() {
-                let _ = handle.join();
+            // For remaining threads that timed out, we must make a choice:
+            // Option A: Join them (blocks until mining completes - could take minutes)
+            // Option B: Detach them (memory leak as ROM stays in memory)
+            // We choose Option A with a warning, as memory leaks are worse than delays
+            if !thread_handles.is_empty() {
+                eprintln!("   ⚠️  {} threads still mining - waiting for them to complete...", thread_handles.len());
+                eprintln!("   This may take a few minutes. ROM must be released before starting new challenge.");
+                for (_name, handle) in thread_handles.drain() {
+                    let _ = handle.join(); // Must wait to prevent memory leak
+                }
+                println!("   All threads completed.");
             }
 
             // Stop display thread
