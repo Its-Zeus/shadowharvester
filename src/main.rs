@@ -129,8 +129,9 @@ fn setup_donate_all_wallets(wallets_file: &str, destination_address: &str, api_u
     println!("📂 Loaded {} wallet(s) from file", wallets.len());
     println!();
 
-    // Create HTTP client
+    // Create HTTP client with User-Agent (required to avoid 403 errors from WAF)
     let client = reqwest::blocking::Client::builder()
+        .user_agent(constants::USER_AGENT)
         .timeout(std::time::Duration::from_secs(30))
         .build()
         .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
