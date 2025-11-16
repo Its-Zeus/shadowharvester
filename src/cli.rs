@@ -8,7 +8,7 @@ pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Commands>,
 
-    /// The base URL for the Scavenger Mine API (e.g., https://scavenger.gd.midnighttge.io)
+    /// The base URL for the Scavenger Mine API (e.g., https://scavenger.prod.gd.midnighttge.io)
     #[arg(long)]
     pub api_url: Option<String>,
 
